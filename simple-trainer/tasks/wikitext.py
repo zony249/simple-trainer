@@ -1,0 +1,106 @@
+import os 
+import dataclasses 
+from copy import deepcopy 
+from typing import Dict, List, Tuple, Union, Self, Optional 
+
+import torch 
+from torch.utils.data import Dataset 
+
+from datasets import load_dataset, load_from_disk
+
+from .abstract_task import AbstractTask 
+
+class WikitextTask(AbstractTask): 
+    task = "wikitext"
+    dataset_path = "EleutherAI/wikitext_document_level"
+    dataset_name = "wikitext-2-raw-v1"
+
+    def __init__(self, 
+                 splits: List[str] = ["train", "test", "validation"], 
+                 load_from_disk=False, 
+                 **kwargs): 
+        super().__init__(splits=splits, load_from_disk=load_from_disk, **kwargs) 
+    def get_dataset(self, 
+                    **kwargs) -> Dataset: 
+        if self.load_from_disk: 
+            pass 
+        else: 
+            dataset = load_dataset(path=self.dataset_path, 
+                                   name=self.dataset_name, 
+                                   **kwargs)
+        return dataset
+    def get_splits(self, 
+                   list_splits: List[str], 
+                   **kwargs) -> Dict[str, Dataset]: 
+        dict_datasets = {}
+        for split in list_splits: 
+            kwargs["split"] = split 
+            dataset = self.get_dataset(**kwargs)
+            dict_datasets[split] = dataset
+        return dict_datasets
+
+
+    def process_dataset(self, 
+                        dataset:Dataset) -> Dataset: 
+        new_dataset = dataset.map(self.preprocess_fn) 
+        return new_dataset 
+
+    def preprocess_fn(self, example): 
+        example["page"] = wikitext_detokenizer(example)
+        return example    
+
+
+# From LM-eval
+
+
+import re
+
+
+def wikitext_detokenizer(doc):
+    string = doc["page"]
+    # contractions
+    string = string.replace("s '", "s'")
+    string = re.sub(r"/' [0-9]/", r"/'[0-9]/", string)
+    # number separators
+    string = string.replace(" @-@ ", "-")
+    string = string.replace(" @,@ ", ",")
+    string = string.replace(" @.@ ", ".")
+    # punctuation
+    string = string.replace(" : ", ": ")
+    string = string.replace(" ; ", "; ")
+    string = string.replace(" . ", ". ")
+    string = string.replace(" ! ", "! ")
+    string = string.replace(" ? ", "? ")
+    string = string.replace(" , ", ", ")
+    # double brackets
+    string = re.sub(r"\(\s*([^\)]*?)\s*\)", r"(\1)", string)
+    string = re.sub(r"\[\s*([^\]]*?)\s*\]", r"[\1]", string)
+    string = re.sub(r"{\s*([^}]*?)\s*}", r"{\1}", string)
+    string = re.sub(r"\"\s*([^\"]*?)\s*\"", r'"\1"', string)
+    string = re.sub(r"'\s*([^']*?)\s*'", r"'\1'", string)
+    # miscellaneous
+    string = string.replace("= = = =", "====")
+    string = string.replace("= = =", "===")
+    string = string.replace("= =", "==")
+    string = string.replace(" " + chr(176) + " ", chr(176))
+    string = string.replace(" \n", "\n")
+    string = string.replace("\n ", "\n")
+    string = string.replace(" N ", " 1 ")
+    string = string.replace(" 's", "'s")
+
+    return string
+
+
+def process_results(doc, results):
+    (loglikelihood,) = results
+    # IMPORTANT: wikitext counts number of words in *original doc before detokenization*
+    _words = len(re.split(r"\s+", doc["page"]))
+    _bytes = len(doc["page"].encode("utf-8"))
+    return {
+        "word_perplexity": (loglikelihood, _words),
+        "byte_perplexity": (loglikelihood, _bytes),
+        "bits_per_byte": (loglikelihood, _bytes),
+    }
+
+if __name__ == "__main__": 
+    wikitext = WikitextTask()
