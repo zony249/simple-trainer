@@ -1,7 +1,7 @@
 import os 
 import dataclasses 
 from copy import deepcopy
-from typing import Dict, List, Union, Optional, Self, Tuple
+from typing import Dict, List, Union, Optional, Self, Tuple, Any
 from abc import abstractmethod, ABCMeta
 
 import torch 
@@ -43,4 +43,8 @@ class AbstractTask(metaclass=ABCMeta):
     @abstractmethod 
     def process_dataset(self, 
                         dataset:Dataset) -> Dataset: 
+        raise NotImplementedError
+    
+    @abstractmethod 
+    def compute_metrics(self, example) -> Any: 
         raise NotImplementedError

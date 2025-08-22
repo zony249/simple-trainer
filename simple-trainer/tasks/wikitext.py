@@ -38,6 +38,7 @@ class WikitextTask(AbstractTask):
                    list_splits: List[str], 
                    **kwargs) -> Dict[str, Dataset]: 
         dict_datasets = {}
+        self.splits = getattr(self, "splits", None)
         if self.splits is not None:
             return {k: v for k, v in self.splits.items() if k in list_splits}
         for split in list_splits: 
