@@ -18,12 +18,17 @@ class WikitextTask(AbstractTask):
     def __init__(self, 
                  splits: List[str] = ["train", "test", "validation"], 
                  load_from_disk=False, 
+                 local_dir=None, 
                  **kwargs): 
-        super().__init__(splits=splits, load_from_disk=load_from_disk, **kwargs) 
+        super().__init__(splits=splits, 
+                         load_from_disk=load_from_disk, 
+                         local_dir=local_dir, 
+                         **kwargs) 
     def get_dataset(self, 
                     **kwargs) -> Dataset: 
         if self.load_from_disk: 
-            pass 
+            assert self.local_dir is not None, f"local_dir must be defined if load_from_disk is True."
+            dataset = load_from_disk(os.path.join(self.local_dir, kwargs["split"]))
         else: 
             dataset = load_dataset(path=self.dataset_path, 
                                    name=self.dataset_name, 
@@ -33,6 +38,8 @@ class WikitextTask(AbstractTask):
                    list_splits: List[str], 
                    **kwargs) -> Dict[str, Dataset]: 
         dict_datasets = {}
+        if self.splits is not None:
+            return {k: v for k, v in self.splits.items() if k in list_splits}
         for split in list_splits: 
             kwargs["split"] = split 
             dataset = self.get_dataset(**kwargs)
@@ -103,4 +110,5 @@ def process_results(doc, results):
     }
 
 if __name__ == "__main__": 
-    wikitext = WikitextTask()
+    wikitext = WikitextTask(load_from_disk=True, local_dir="wikitext_local")
+    print(wikitext.get_splits(["train", "validation"]))

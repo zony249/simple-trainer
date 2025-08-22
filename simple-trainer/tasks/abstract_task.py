@@ -14,8 +14,16 @@ class AbstractTask(metaclass=ABCMeta):
     def __init__(self, 
                  splits: List[str], 
                  load_from_disk=False, 
+                 local_dir=None, 
                  **kwargs): 
+        """
+        An abstract class for tasks. All subclasses must: 
+            1. be loadable from disk OR online (or both)
+            2. allow loading different splits 
+            3. accept pre-processing (if not, make process_dataset an identity function)
+        """
         self.load_from_disk = load_from_disk 
+        self.local_dir = local_dir
         self.splits = self.get_splits(splits, **kwargs)
 
         for k in self.splits: 
