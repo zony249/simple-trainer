@@ -5,7 +5,7 @@ from typing import Dict, List, Union, Optional, Self, Tuple, Any
 from abc import abstractmethod, ABCMeta
 
 import torch 
-from torch.utils.data import Dataset 
+from torch.utils.data import Dataset, DataLoader
 
 class AbstractTask(metaclass=ABCMeta): 
     task = None
@@ -39,7 +39,14 @@ class AbstractTask(metaclass=ABCMeta):
                    list_splits: List[str], 
                    **kwargs) -> Dict[str, Dataset]: 
         raise NotImplementedError
-    
+
+    @abstractmethod
+    def get_dataloaders(self, 
+                        list_splits: List[str], 
+                        **kwargs) -> List[DataLoader]: 
+        raise NotImplementedError
+
+
     @abstractmethod 
     def process_dataset(self, 
                         dataset:Dataset) -> Dataset: 

@@ -1,10 +1,10 @@
 import os 
 import dataclasses 
 from copy import deepcopy 
-from typing import Dict, List, Tuple, Union, Self, Optional 
+from typing import Dict, List, Tuple, Union, Self, Optional, Any
 
 import torch 
-from torch.utils.data import Dataset 
+from torch.utils.data import Dataset, DataLoader
 
 from datasets import load_dataset, load_from_disk
 
@@ -47,7 +47,36 @@ class WikitextTask(AbstractTask):
             dict_datasets[split] = dataset
         return dict_datasets
 
+    def get_dataloaders(self, 
+                        list_splits: List[str], 
+                        batch_size=8, 
+                        **kwargs) -> List[DataLoader]: 
+        data_splits = self.get_splits(list_splits, **kwargs)
+        dataloaders = []
+        for split in list_splits: 
+            if split == "train":
+                dataloaders.append(DataLoader(
+                    dataset=data_splits[split], 
+                    batch_size=batch_size,
+                    shuffle=True, 
+                    collate_fn=self.collate_fn
+                ))
+            else: 
+                dataloaders.append(DataLoader(
+                    dataset=data_splits[split], 
+                    batch_size=batch_size,
+                    collate_fn=self.collate_fn
+                ))
+        return dataloaders 
 
+    def collate_fn(self, batch: Tuple) -> Any:
+        """
+        simply unwrap the docs
+        """ 
+        batch 
+        batch = [b["page"] for b in batch] 
+        return batch
+        
     def process_dataset(self, 
                         dataset:Dataset) -> Dataset: 
         new_dataset = dataset.map(self.preprocess_fn) 
@@ -56,6 +85,9 @@ class WikitextTask(AbstractTask):
     def preprocess_fn(self, example): 
         example["page"] = wikitext_detokenizer(example)
         return example    
+
+    def compute_metrics(self, example):
+        return super().compute_metrics(example)
 
 
 # From LM-eval
@@ -113,3 +145,7 @@ def process_results(doc, results):
 if __name__ == "__main__": 
     wikitext = WikitextTask(load_from_disk=True, local_dir="wikitext_local")
     print(wikitext.get_splits(["train", "validation"]))
+    train_dataloader = wikitext.get_dataloaders(["train"])["train"] 
+
+    sample = next(iter(train_dataloader))
+    pass
