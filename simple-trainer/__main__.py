@@ -22,6 +22,21 @@ from accelerate import Accelerator
 from .tasks import TASK_MAP
 from .trainer import SimpleTrainer
 
+
+def print_trainable_parameters(model):
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+    print(
+        f"trainable params: {trainable_params} || "
+        f"all params: {all_param} || "
+        f"trainable%: {100 * trainable_params / all_param}"
+    )
+
+
 if __name__ == "__main__": 
 
     parser = ArgumentParser("Simple Trainer")
@@ -45,7 +60,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size)
 
     # load model  
-    model = AutoModelForCausalLM.from_pretrained(args.hf_name_or_path)
+    model = AutoModelForCausalLM.from_pretrained(args.hf_name_or_path, dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(args.hf_name_or_path)
 
     if args.lora_adapter is not None: 
@@ -65,7 +80,7 @@ if __name__ == "__main__":
             pass
             #TODO: load lora_adapter with defined name 
 
-
+    print_trainable_parameters(model)
 
     # optimizer assignment 
     if isinstance(model, LoraModel): 

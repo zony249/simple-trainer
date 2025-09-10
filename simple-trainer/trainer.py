@@ -45,8 +45,13 @@ def DEFAULT_CAUSAL_LM_PREPROCESS_FN(batch: List[Union[Tuple[str, str], str]],
     else: 
         preproc_batch = batch
 
+    if tokenizer.pad_token_id is None: 
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.pad_token = tokenizer.eos_token
+
     tokenized_batch = tokenizer(preproc_batch, 
                             truncation=True, 
+                            padding=True,
                             max_length=1024, 
                             return_tensors="pt")
     # shift tokens 
@@ -59,6 +64,7 @@ def DEFAULT_CAUSAL_LM_PREPROCESS_FN(batch: List[Union[Tuple[str, str], str]],
     return tokenized_batch
 
 logger = logging.getLogger(__name__)
+
 
 
 class SimpleTrainer: 
