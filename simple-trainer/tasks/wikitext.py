@@ -71,7 +71,7 @@ class WikitextTask(AbstractTask):
 
     def collate_fn(self, batch: Tuple) -> Any:
         """
-        simply unwrap the docs
+        simply unwrap the docs. Used by the dataloader
         """ 
         batch 
         batch = [b["page"] for b in batch] 
@@ -145,7 +145,7 @@ def process_results(doc, results):
 if __name__ == "__main__": 
     wikitext = WikitextTask(load_from_disk=True, local_dir="wikitext_local")
     print(wikitext.get_splits(["train", "validation"]))
-    train_dataloader = wikitext.get_dataloaders(["train"])["train"] 
+    train_dataloader = wikitext.get_dataloaders(["train"])
 
     sample = next(iter(train_dataloader))
     pass

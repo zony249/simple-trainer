@@ -36,6 +36,8 @@ def DEFAULT_CAUSAL_LM_PREPROCESS_FN(batch: List[Union[Tuple[str, str], str]],
     otherwise, expect batch = [text1, text2, ...]
     """
     if use_chat_template: 
+        assert isinstance(batch[0], tuple) and len(batch[0]) == 2, \
+            f"use_chat_template is True, there expect batch to be List of Tuple(user: str, assistant: str)."
         preproc_batch = []
         for item in batch:
             chat = [{"role": "user", "content": item[0]}, 
@@ -43,6 +45,8 @@ def DEFAULT_CAUSAL_LM_PREPROCESS_FN(batch: List[Union[Tuple[str, str], str]],
             chat_t = tokenizer.apply_chat_template(chat, tokenize=False)
             preproc_batch.append(chat_t)
     else: 
+        assert isinstance(batch[0], str), \
+            f"For causal language modelling objective, expect batch to be List[str]."
         preproc_batch = batch
 
     if tokenizer.pad_token_id is None: 
