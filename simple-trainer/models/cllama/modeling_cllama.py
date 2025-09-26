@@ -46,6 +46,7 @@ from transformers.utils.generic import check_model_inputs
 from .configuration_cllama import CLlamaConfig
 
 from transformers import AutoModel, AutoModelForCausalLM, PreTrainedTokenizer
+from ..utils import *
 
 
 logger = logging.get_logger(__name__)
@@ -390,7 +391,24 @@ class CLlamaModel(CLlamaPreTrainedModel):
 
         # TODO: causal mask needs to be updated
         if self.compress_mode:
-            pass 
+
+            batch_size, seq_len = attention_mask.shape
+            num_new_toks = input_ids.shape[1]
+
+            assert self.gist_token_id is not None, "In compression mode, but GIST token ID is None..."
+            if not use_cache: 
+                pass 
+                causal_mask = get_causal_mask(attention_mask, self.config.num_attention_heads, seq_len)
+                first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
+                last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
+
+                for b in range(batch_size): 
+                    if last_idx[b] + 1 < seq_len:
+                        causal_mask[b, :, last_idx[b]+1:, :first_idx[b]] = False
+                
+                causal_mask
+            else: 
+                pass
         else: 
             causal_mask = create_causal_mask(
                 config=self.config,
@@ -400,21 +418,28 @@ class CLlamaModel(CLlamaPreTrainedModel):
                 past_key_values=past_key_values,
                 position_ids=position_ids,
             )
-            # [batch, heads, new_inputs, total_seq_len] 
+
             batch_size, seq_len = attention_mask.shape
+            # Implementation of 4D causal attention mask 
+            # CURRENTLY DOES NOT WORK WITH BEAM SEARCH
+            # [batch, heads, new_inputs, total_seq_len] 
+            num_new_toks = input_ids.shape[1]
             if not use_cache: 
-                pre_tril = (attention_mask[:, None, :, None] * attention_mask[:, None, :, None].transpose(-2,-1)) \
-                    * torch.ones((1, self.config.num_attention_heads, 1, seq_len)).to(attention_mask.device) 
-                causal_mask = torch.tril(pre_tril).bool()
+                # pre_tril = attention_mask[:, None, None, :] \
+                #     * torch.ones((1, self.config.num_attention_heads, 1, seq_len)).to(attention_mask.device) 
+                # causal_mask = torch.tril(pre_tril).bool()
+                causal_mask = get_causal_mask(attention_mask, self.config.num_attention_heads, seq_len)
             else: 
                 cache_seq_len = past_key_values.get_seq_length() 
-                pre_tril = attention_mask[:, None, :, None] * torch.ones((1, self.config.num_attention_heads, 1, seq_len + cache_seq_len)).to(attention_mask.device)
+                pre_tril = attention_mask[:, None, None, :] * torch.ones((1, self.config.num_attention_heads, num_new_toks, seq_len)).to(attention_mask.device)
                 causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len).bool()
+
+            # causal_mask = None # remove later
 
         hidden_states = inputs_embeds
         # TODO: rotary embeddings must be updated too
         if self.compress_mode:
-            pass 
+            position_embeddings = self.rotary_emb(hidden_states, position_ids)
         else: 
             position_embeddings = self.rotary_emb(hidden_states, position_ids)
 

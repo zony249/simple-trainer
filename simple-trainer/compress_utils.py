@@ -19,6 +19,12 @@ COMPRESSED_MODEL_MAP = {
     "llama" : "cllama"
 }
 
+
+import debugpy 
+debugpy.listen(("172.26.93.30", 5678))
+debugpy.wait_for_client()
+
+
 def get_compression_model(model: PreTrainedModel, 
                           tokenizer: PreTrainedTokenizer) -> Tuple[PreTrainedModel, PreTrainedTokenizer]: 
     config = model.config 
@@ -33,12 +39,12 @@ def get_compression_model(model: PreTrainedModel,
         cmodel = CLlamaForCausalLM(cmodel_config)
         cmodel.load_state_dict(model.state_dict(), strict=False)
         
-        # cmodel.enable_compression_mode() 
+        ctokenizer = cmodel.enable_compression_mode(tokenizer=tokenizer) 
         
         # del model
         # torch.cuda.empty_cache()
         
-    return cmodel, tokenizer
+    return cmodel, ctokenizer
 
 def get_mi_compression_model(model: PreTrainedModel, 
                              tokenizer: PreTrainedTokenizer) -> Tuple[PreTrainedModel, PreTrainedTokenizer]: 
@@ -48,10 +54,11 @@ if __name__ == "__main__":
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from accelerate import infer_auto_device_map, dispatch_model
-    model_name = "huggyllama/llama-7b"
+    model_name = "llama-7b"
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
+    # tokenizer.padding_side = "right"
     compression_model, compression_tokenizer = get_compression_model(model, tokenizer)
 
 
@@ -61,7 +68,7 @@ if __name__ == "__main__":
     dispatch_model(compression_model, device_map=device_map)
     # compression_model = compression_model
 
-    text = ["Hello, my dog is cute", "hello world"]
+    text = ["Hello, my dog is cute <GIST><GIST> his name is Joe.", "Hey everyone! <GIST> what's up?"]
     device = next(iter(compression_model.parameters())).device.type
     inputs = compression_tokenizer(text, return_tensors="pt", padding=True).to(device)
     outputs = compression_model.generate(**inputs, use_cache=False, max_new_tokens=100)

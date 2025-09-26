@@ -4,7 +4,8 @@ export CUDA_VISIBLE_DEVICES=1,2,3
 # export DEBUGPY_ENABLE=1
 
 
-accelerate launch \
+python -m debugpy --listen 0.0.0.0:5678 -m \
+    accelerate.commands.launch \
     --config_file accel_config/fsdp2.yaml \
     -m simple-trainer \
         --hf_name_or_path=Qwen/Qwen3-0.6B \
