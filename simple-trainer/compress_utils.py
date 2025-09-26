@@ -51,6 +51,7 @@ if __name__ == "__main__":
     model_name = "huggyllama/llama-7b"
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
     compression_model, compression_tokenizer = get_compression_model(model, tokenizer)
 
 
@@ -62,7 +63,7 @@ if __name__ == "__main__":
 
     text = ["Hello, my dog is cute", "hello world"]
     device = next(iter(compression_model.parameters())).device.type
-    inputs = compression_tokenizer(text, return_tensors="pt").to(device)
+    inputs = compression_tokenizer(text, return_tensors="pt", padding=True).to(device)
     outputs = compression_model.generate(**inputs, use_cache=False, max_new_tokens=100)
     print(compression_tokenizer.batch_decode(outputs))
 

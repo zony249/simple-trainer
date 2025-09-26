@@ -403,11 +403,13 @@ class CLlamaModel(CLlamaPreTrainedModel):
             # [batch, heads, new_inputs, total_seq_len] 
             batch_size, seq_len = attention_mask.shape
             if not use_cache: 
-                causal_mask = torch.tril(attention_mask[:, None, :, None] * torch.ones((1, self.config.num_attention_heads, 1, seq_len)).to(attention_mask.device))
+                pre_tril = (attention_mask[:, None, :, None] * attention_mask[:, None, :, None].transpose(-2,-1)) \
+                    * torch.ones((1, self.config.num_attention_heads, 1, seq_len)).to(attention_mask.device) 
+                causal_mask = torch.tril(pre_tril).bool()
             else: 
                 cache_seq_len = past_key_values.get_seq_length() 
                 pre_tril = attention_mask[:, None, :, None] * torch.ones((1, self.config.num_attention_heads, 1, seq_len + cache_seq_len)).to(attention_mask.device)
-                causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len)
+                causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len).bool()
 
         hidden_states = inputs_embeds
         # TODO: rotary embeddings must be updated too
