@@ -13,13 +13,13 @@
 # limitations under the License.
 from typing import TYPE_CHECKING
 
-from ...utils import _LazyModule
-from ...utils.import_utils import define_import_structure
+from transformers.utils import _LazyModule
+from transformers.utils.import_utils import define_import_structure
 
 
 if TYPE_CHECKING:
-    from .configuration_llama import *
-    from .modeling_llama import *
+    from .configuration_cllama import *
+    from .modeling_cllama import *
     from .tokenization_llama import *
     from .tokenization_llama_fast import *
 else:

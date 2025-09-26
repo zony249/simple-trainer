@@ -19,11 +19,12 @@
 # limitations under the License.
 """LLaMA model configuration"""
 
-from ...configuration_utils import PretrainedConfig
-from ...modeling_rope_utils import rope_config_validation
+from transformers.configuration_utils import PretrainedConfig
+from transformers.modeling_rope_utils import rope_config_validation
+from transformers import AutoConfig
 
 
-class LlamaConfig(PretrainedConfig):
+class CLlamaConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`LlamaModel`]. It is used to instantiate an LLaMA
     model according to the specified arguments, defining the model architecture. Instantiating a configuration with the
@@ -140,7 +141,7 @@ class LlamaConfig(PretrainedConfig):
     >>> configuration = model.config
     ```"""
 
-    model_type = "llama"
+    model_type = "cllama"
     keys_to_ignore_at_inference = ["past_key_values"]
     # Default tensor parallel plan for base model `LlamaModel`
     base_model_tp_plan = {
@@ -222,4 +223,6 @@ class LlamaConfig(PretrainedConfig):
         )
 
 
-__all__ = ["LlamaConfig"]
+AutoConfig.register("cllama", CLlamaConfig)
+
+__all__ = ["CLlamaConfig"]

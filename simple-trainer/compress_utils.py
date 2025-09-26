@@ -8,14 +8,63 @@ from transformers import (
     PreTrainedTokenizer
 )
 
+from .models import (
+    CLlamaConfig,
+    CLlamaModel,  
+    CLlamaForCausalLM
+)
+
 COMPRESSED_MODEL_MAP = {
-    "qwen3": "cqwen3"
+    "qwen3": "cqwen3", 
+    "llama" : "cllama"
 }
 
 def get_compression_model(model: PreTrainedModel, 
                           tokenizer: PreTrainedTokenizer) -> Tuple[PreTrainedModel, PreTrainedTokenizer]: 
-    pass
+    config = model.config 
+    model_type = config.model_type 
+    if model_type not in COMPRESSED_MODEL_MAP: 
+        raise ValueError(f"Model type {model_type} is not supported for compression.") 
+    compression_model_type = COMPRESSED_MODEL_MAP[model_type] 
+
+    if compression_model_type == "cllama": 
+        cmodel_config = CLlamaConfig.from_pretrained(model.config._name_or_path)
+        cmodel_config.torch_dtype = torch.bfloat16
+        cmodel = CLlamaForCausalLM(cmodel_config)
+        cmodel.load_state_dict(model.state_dict(), strict=False)
+        
+        # cmodel.enable_compression_mode() 
+        
+        # del model
+        # torch.cuda.empty_cache()
+        
+    return cmodel, tokenizer
 
 def get_mi_compression_model(model: PreTrainedModel, 
                              tokenizer: PreTrainedTokenizer) -> Tuple[PreTrainedModel, PreTrainedTokenizer]: 
     pass
+
+if __name__ == "__main__": 
+
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from accelerate import infer_auto_device_map, dispatch_model
+    model_name = "huggyllama/llama-7b"
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    compression_model, compression_tokenizer = get_compression_model(model, tokenizer)
+
+
+    device_map = infer_auto_device_map(compression_model, 
+                                        max_memory={0: "20GB", 1: "20GB"}, 
+                                        no_split_module_classes=compression_model._no_split_modules)
+    dispatch_model(compression_model, device_map=device_map)
+    # compression_model = compression_model
+
+    text = ["Hello, my dog is cute", "hello world"]
+    device = next(iter(compression_model.parameters())).device.type
+    inputs = compression_tokenizer(text, return_tensors="pt").to(device)
+    outputs = compression_model.generate(**inputs, use_cache=False, max_new_tokens=100)
+    print(compression_tokenizer.batch_decode(outputs))
+
+    # print(compression_model)
+    # print(compression_tokenizer)
