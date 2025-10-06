@@ -6,6 +6,7 @@ from typing import Dict, List, Union, Any, Self, Optional, Tuple
 import torch 
 from torch import nn 
 import torch.nn.functional as F 
+from transformers import Cache
 
 def get_first_idx_of_token(input_ids:torch.Tensor, 
                            token_id: int) -> torch.Tensor: 
@@ -32,6 +33,18 @@ def get_causal_mask(attention_mask:torch.Tensor,
     pre_tril = attention_mask[:, None, None, :] \
             * torch.ones((1, num_attn_heads, total_seq_len, total_seq_len)).to(attention_mask.device) 
     causal_mask = torch.tril(pre_tril).bool()
+    return causal_mask
+
+
+def get_causal_mask_with_cache(cache: Cache, 
+                               attention_mask: torch.Tensor, 
+                               num_attn_heads: int, 
+                               num_new_toks: int, 
+                               total_seq_len: int
+                               ) -> torch.Tensor: 
+    cache_seq_len = cache.get_seq_length() 
+    pre_tril = attention_mask[:, None, None, :] * torch.ones((1, num_attn_heads, num_new_toks, total_seq_len)).to(attention_mask.device)
+    causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len).bool()
     return causal_mask
 
 if __name__ == "__main__": 
