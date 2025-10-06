@@ -15,11 +15,11 @@ machine_rank: 0
 main_training_function: main
 mixed_precision: bf16
 num_machines: 1
-num_processes: 3
+num_processes: 4
 parallelism_config:
   parallelism_config_cp_size: 1
   parallelism_config_dp_replicate_size: 1
-  parallelism_config_dp_shard_size: 3
+  parallelism_config_dp_shard_size: 4
   parallelism_config_tp_size: 1
 rdzv_backend: static
 same_network: true
