@@ -20,9 +20,9 @@ COMPRESSED_MODEL_MAP = {
 }
 
 
-import debugpy 
-debugpy.listen(("172.26.93.30", 5678))
-debugpy.wait_for_client()
+# import debugpy 
+# debugpy.listen(("172.26.93.93", 5678))
+# debugpy.wait_for_client()
 
 
 def get_compression_model(model: PreTrainedModel, 
@@ -68,10 +68,10 @@ if __name__ == "__main__":
     dispatch_model(compression_model, device_map=device_map)
     # compression_model = compression_model
 
-    text = ["Hello, my dog is cute <GIST><GIST> his name is Joe.", "Hey everyone! <GIST> what's up?"]
+    text = ["Hello, my dog is cute <GIST><GIST> his name is joe.", "Hey everyone! what's up? <GIST>"]
     device = next(iter(compression_model.parameters())).device.type
     inputs = compression_tokenizer(text, return_tensors="pt", padding=True).to(device)
-    outputs = compression_model.generate(**inputs, use_cache=False, max_new_tokens=100)
+    outputs = compression_model.generate(**inputs, use_cache=True, max_new_tokens=100)
     print(compression_tokenizer.batch_decode(outputs))
 
     # print(compression_model)
