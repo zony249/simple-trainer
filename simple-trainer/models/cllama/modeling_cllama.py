@@ -389,7 +389,6 @@ class CLlamaModel(CLlamaPreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        # TODO: causal mask needs to be updated
         if self.compress_mode:
 
             batch_size, seq_len = attention_mask.shape
@@ -399,16 +398,55 @@ class CLlamaModel(CLlamaPreTrainedModel):
             if not use_cache: 
                 pass 
                 causal_mask = get_causal_mask(attention_mask, self.config.num_attention_heads, seq_len)
+
                 first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
                 last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
 
                 for b in range(batch_size): 
-                    if last_idx[b] + 1 < seq_len:
-                        causal_mask[b, :, last_idx[b]+1:, :first_idx[b]] = False
+                    # If there exists gist tokens in the input, then fix mask
+                    if (input_ids[b] == self.gist_token_id).sum() > 0:
+                        if last_idx[b] + 1 < seq_len:
+                            causal_mask[b, :, last_idx[b]+1:, :first_idx[b]] = False
                 
                 causal_mask
             else: 
-                pass
+                num_new_toks = input_ids.shape[1]
+                batch_size, seq_len = attention_mask.shape
+                causal_mask = get_causal_mask_with_cache(past_key_values, attention_mask, self.config.num_attention_heads, num_new_toks, seq_len)
+
+                cache_len = past_key_values.get_seq_length() 
+                if cache_len == 0: # First input
+                    # These attributes are set for each generation batch. 
+                    self.first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
+                    self.last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
+                    self.num_gist_tok_per_batch = (input_ids == self.gist_token_id).sum(dim=-1) #[batch,]
+                    self.relative_offset = attention_mask.shape[1] - attention_mask.sum(dim=-1)
+                else: 
+                    num_new_gist_toks = (input_ids == self.gist_token_id).sum(dim=-1) 
+                    # first and last gist positions in new input
+                    maybe_last_gist = get_last_idx_of_token(input_ids, self.gist_token_id)                    
+                    maybe_first_gist = get_first_idx_of_token(input_ids, self.gist_token_id)                    
+                    # update where the first and last gist tokens are in the full sequence
+                    self.last_idx = torch.where(num_new_gist_toks > 0, cache_len + maybe_last_gist, self.last_idx)
+                    self.first_idx = torch.where(self.num_gist_tok_per_batch == 0, cache_len + maybe_first_gist, self.first_idx) 
+
+                    self.num_gist_tok_per_batch += num_new_gist_toks 
+
+
+                for b in range(batch_size): 
+                    # If there exists gist tokens in the input, then fix mask
+                    if self.num_gist_tok_per_batch[b] > 0:
+                        if self.last_idx[b] + 1 < seq_len:
+                            causal_mask[b, :, self.last_idx[b]+1-cache_len:, :self.first_idx[b]] = False
+                            # mess with position IDS
+                            position_ids[b, self.last_idx[b]+1-cache_len:] = position_ids[b, self.last_idx[b]+1-cache_len:] - self.last_idx[b] + self.relative_offset[b]
+                position_ids = torch.where(input_ids == self.gist_token_id, 0, position_ids)
+                
+                
+
+            
+            causal_mask
+                
         else: 
             causal_mask = create_causal_mask(
                 config=self.config,
@@ -420,28 +458,27 @@ class CLlamaModel(CLlamaPreTrainedModel):
             )
 
             batch_size, seq_len = attention_mask.shape
+            num_new_toks = input_ids.shape[1]
             # Implementation of 4D causal attention mask 
             # CURRENTLY DOES NOT WORK WITH BEAM SEARCH
             # [batch, heads, new_inputs, total_seq_len] 
-            num_new_toks = input_ids.shape[1]
             if not use_cache: 
                 # pre_tril = attention_mask[:, None, None, :] \
                 #     * torch.ones((1, self.config.num_attention_heads, 1, seq_len)).to(attention_mask.device) 
                 # causal_mask = torch.tril(pre_tril).bool()
                 causal_mask = get_causal_mask(attention_mask, self.config.num_attention_heads, seq_len)
             else: 
-                cache_seq_len = past_key_values.get_seq_length() 
-                pre_tril = attention_mask[:, None, None, :] * torch.ones((1, self.config.num_attention_heads, num_new_toks, seq_len)).to(attention_mask.device)
-                causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len).bool()
+                # cache_seq_len = past_key_values.get_seq_length() 
+                # pre_tril = attention_mask[:, None, None, :] * torch.ones((1, self.config.num_attention_heads, num_new_toks, seq_len)).to(attention_mask.device)
+                # causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len).bool()
+                causal_mask = get_causal_mask_with_cache(past_key_values, attention_mask, self.config.num_attention_heads, num_new_toks, seq_len)
 
             # causal_mask = None # remove later
 
         hidden_states = inputs_embeds
+
         # TODO: rotary embeddings must be updated too
-        if self.compress_mode:
-            position_embeddings = self.rotary_emb(hidden_states, position_ids)
-        else: 
-            position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
