@@ -6,8 +6,11 @@ import multiprocessing
 import tqdm
 import logging
 from argparse import Namespace
+import math
 from tqdm_multiprocess.logger import setup_logger_tqdm
+import shutil
 
+import numpy as np
 import torch
 from torch import nn
 from torch.optim import Optimizer
@@ -16,7 +19,8 @@ from torch.utils.data import DataLoader
 from transformers import (
     AutoTokenizer, 
     PreTrainedModel, 
-    PreTrainedTokenizer
+    PreTrainedTokenizer, 
+    EvalPrediction
 )
 
 from accelerate import Accelerator
@@ -82,7 +86,9 @@ class SimpleTrainer:
                  accelerator: Accelerator, 
                  args: Namespace, 
                  output_dir : Optional[str] = None, 
-                 preprocess_fn: Optional[callable] = None): 
+                 preprocess_fn: Optional[callable] = None, 
+                 compute_metrics: Optional[callable] = None, 
+                 optimizing_metric: Optional[str] = None): 
         self.model = model 
         self.tokenizer = tokenizer
         self.optim = optim 
@@ -92,12 +98,28 @@ class SimpleTrainer:
         self.accel = accelerator
         self.args = args
 
-        self.output_dir = DEFAULT_OUTPUT_DIR if output_dir is None else output_dir 
         self.preprocess_fn = DEFAULT_CAUSAL_LM_PREPROCESS_FN if preprocess_fn is None else preprocess_fn
+        self.compute_metrics = compute_metrics
         
         self.current_step = 0
         self.epochs = self.args.epochs 
         self.batch_size = self.args.batch_size
+        self.eval_steps = self.args.eval_steps
+        self.optimizing_metric = "loss" if optimizing_metric is None else optimizing_metric 
+        self.best_metric = -np.inf if optimizing_metric != "loss" else np.inf
+
+        self.output_dir = DEFAULT_OUTPUT_DIR if output_dir is None else output_dir 
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        self.all_mets_file = os.path.join(self.output_dir, "all_metrics.log")
+        self.best_mets_file = os.path.join(self.output_dir, "best_metrics.log")
+        if os.path.exists(self.all_mets_file): 
+            shutil.rmtree(self.all_mets_file)
+        if os.path.exists(self.best_mets_file): 
+            shutil.rmtree(self.best_mets_file)
+
+        self.save_checkpoint(save_dir=os.path.join(self.output_dir, "best_tfmr"))
+
 
     def train(self): 
 
@@ -108,7 +130,7 @@ class SimpleTrainer:
         iter_train_dloader = iter(self.train_dloader) 
         self.model.train()
         for i in tbar: 
-
+            self.model.train()
             # Make dataloader iterator repeatable.
             try: 
                 batch = next(iter_train_dloader) 
@@ -122,10 +144,12 @@ class SimpleTrainer:
                 with self.accel.autocast():
 
                     outputs = self.model(input_ids=batch["input_ids"],
+                                            labels=batch["labels"], 
                                             attention_mask=batch["attention_mask"], 
                                             use_cache=False)
                     logits = outputs.logits
-                    loss = nn.CrossEntropyLoss()(logits.view(-1, logits.shape[-1]), batch["labels"].view(-1))
+                    loss = outputs.loss
+                    # loss = nn.CrossEntropyLoss()(logits.view(-1, logits.shape[-1]), batch["labels"].view(-1))
 
                 self.accel.backward(loss)
                 # loss.backward()
@@ -139,11 +163,159 @@ class SimpleTrainer:
             tbar.set_description(f"Training {cur_epoch:.2f}/{self.epochs} Epochs")
             # update tbar postfix
             tbar.set_postfix({"loss": f"{loss.item():.4f}", "lr": f"{self.lr_scheduler.get_last_lr()[0]:.4e}"})
+            if i%self.eval_steps == 0 and i > 0: 
+                eval_preds = self.evaluate(generate=True)
+                metrics = {}
+                if self.compute_metrics is not None: 
+                    metrics = self.compute_metrics(eval_preds)
+                    metrics["eval_loss"] = eval_preds.losses.mean().item()
+                else: 
+                    metrics = {"eval_loss": eval_preds.losses.mean().item()}
+
+                if self.accel.is_main_process:
+                    print("\n\n", metrics)
+                
+                # save model if best metric has been obtained
+                higher_is_better = self.optimizing_metric != "loss" 
+                if higher_is_better: 
+                    operator = np.greater 
+                else:
+                    operator = np.less 
+
+                if self.accel.is_main_process: 
+                    with open(os.path.join(self.output_dir, "all_metrics.log"), "a") as f: 
+                        f.write(f"step:{i},")
+                        f.write(",".join([f"{k}:{v}" for k, v in metrics.items()]))
+                        f.write("\n")
+
+                    if operator(metrics[self.optimizing_metric], self.best_metric): 
+                        self.best_metric = metrics[self.optimizing_metric] 
+                        self.save_checkpoint(save_dir = os.path.join(self.output_dir, "best_tfmr"))
+
+                        with open(os.path.join(self.output_dir, "best_metrics.log"), "a") as f: 
+                            f.write(f"step:{i},")
+                            f.write(",".join([f"{k}:{v}" for k, v in metrics.items()]))
+                            f.write("\n")
+                
+
+
+    def evaluate(self, generate=False) -> EvalPrediction:
+        self.model.eval()
+
+        iter_val_loader = iter(self.val_dloader) 
+        num_val_steps = math.ceil(len(self.val_dloader) / self.batch_size)
+
+        vbar = tqdm.tqdm(range(num_val_steps), desc="Validating")
+
+        for step in vbar: 
+            try:
+                batch = next(iter_val_loader)
+            except StopIteration: 
+                break 
+            
+            batch = self.preprocess_fn(batch, self.tokenizer, use_chat_template=False).to(self.accel.device)
+
+            preds = None 
+            labels = None
+            losses = None
+
+            all_preds = None 
+            all_labels = None
+            all_losses = None
+
+            with torch.no_grad():
+                outputs = self.model(input_ids=batch["input_ids"], 
+                                    labels=batch["labels"], 
+                                    attention_mask=batch["attention_mask"], 
+                                    use_cache=False)
+                logits = outputs.logits
+                loss = outputs.loss
+                # loss = nn.CrossEntropyLoss()(logits.view(-1, logits.shape[-1]), batch["labels"].view(-1)) 
+
+                losses = self.accel.gather(loss) 
 
 
 
+                if generate: 
+                    if "labels" in batch:
+                        labels = batch["labels"]
+                        input_ids = batch["prompt_input_ids"] 
+                        attention_mask = batch["prompt_attention_mask"]
+                    else:
+                        labels = None 
+                        input_ids = batch["input_ids"]
+                        attention_mask = batch["attention_mask"]
+                    
 
-            pass 
+                    gen_outputs = self.model.generate(input_ids=input_ids, 
+                                                    attention_mask=attention_mask, 
+                                                    use_cache=True, return_dict_in_generate=True, 
+                                                    max_new_tokens=512)
+                    preds = gen_outputs.sequences
+                    if self.accel.is_main_process:
+                        print("INPUTS:", self.tokenizer.batch_decode(batch["input_ids"])[0])
+                        print("LABELS:", self.tokenizer.batch_decode(torch.where(labels == -100, self.tokenizer.pad_token_id, labels))[0])
+                        print("PREDS:", self.tokenizer.batch_decode(preds)[0])
+
+                    # pad and gather predictions 
+                    preds = self.accel.pad_across_processes(preds, 
+                                                            dim=-1, 
+                                                            pad_index=-100,
+                                                            pad_first=self.tokenizer.padding_side=="left")
+                    preds = self.accel.gather(preds)
+                    # pad and gather labels
+                    if labels is not None: 
+                        labels = self.accel.pad_across_processes(labels, 
+                                                                 dim=-1, 
+                                                                 pad_index=-100, 
+                                                                 pad_first=self.tokenizer.padding_side=="left")
+                        labels = self.accel.gather(labels)
+                    
+                    all_preds = (preds.cpu() if all_preds is None else torch_pad_and_concatenate(all_preds, preds.cpu(), padding_index=-100))
+                    all_labels = (labels.cpu() if all_labels is None else torch_pad_and_concatenate(all_preds, preds.cpu(), padding_index=-100))
+                    all_losses = (losses.cpu() if all_losses is None else torch.cat([all_losses, losses.cpu()]))
+            
+
+            vbar.set_postfix({"eval_loss": loss.item()})
+            vbar.set_description(f"Validating {step+1}/{num_val_steps} steps")
+
+
+        return EvalPrediction(
+            predictions=all_preds, 
+            label_ids=all_labels, 
+            losses=all_losses
+        )
+        
+    def save_checkpoint(self, save_dir=None): 
+        if save_dir is None: 
+            save_dir = self.output_dir 
+        # save model 
+        unwrapped_model = self.accel.unwrap_model(self.model) 
+        unwrapped_model.save_pretrained(save_dir)
+        self.tokenizer.save_pretrained(save_dir) 
+
+
+
+ 
+
+# From huggingface
+def torch_pad_and_concatenate(tensor1, tensor2, padding_index=-100):
+    """Concatenates `tensor1` and `tensor2` on first axis, applying padding on the second if necessary."""
+    tensor1 = torch.atleast_1d(tensor1)
+    tensor2 = torch.atleast_1d(tensor2)
+
+    if len(tensor1.shape) == 1 or tensor1.shape[1] == tensor2.shape[1]:
+        return torch.cat((tensor1, tensor2), dim=0)
+
+    # Let's figure out the new shape
+    new_shape = (tensor1.shape[0] + tensor2.shape[0], max(tensor1.shape[1], tensor2.shape[1])) + tensor1.shape[2:]
+
+    # Now let's fill the result tensor
+    result = tensor1.new_full(new_shape, padding_index)
+    result[: tensor1.shape[0], : tensor1.shape[1]] = tensor1
+    result[tensor1.shape[0] :, : tensor2.shape[1]] = tensor2
+    return result
+    
         
 
 
