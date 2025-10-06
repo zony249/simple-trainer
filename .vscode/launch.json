@@ -9,7 +9,7 @@
             "type": "debugpy",
             "request": "attach",
             "connect": {
-                "host": "172.26.93.30",
+                "host": "172.26.93.63",
                 "port": 5678
             },
             "pathMappings": [
