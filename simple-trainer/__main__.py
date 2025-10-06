@@ -24,6 +24,8 @@ from .tasks import (
     DataCollatorForAlpacaCLM
 )
 from .trainer import SimpleTrainer
+from .compress_utils import get_compression_model, get_mi_compression_model
+from .metrics import get_compute_metrics_fn
 
 
 def print_trainable_parameters(model):
@@ -40,6 +42,13 @@ def print_trainable_parameters(model):
     )
 
 
+# import debugpy 
+# local_rank = int(os.environ.get("LOCAL_RANK", 0))
+# if local_rank == 0:
+#     debugpy.listen(("172.26.93.63", 5678 + local_rank))
+#     debugpy.wait_for_client()
+
+
 if __name__ == "__main__": 
 
     parser = ArgumentParser("Simple Trainer")
@@ -50,6 +59,9 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    parser.add_argument("--eval_steps", type=int, default=500)
+    parser.add_argument("--output_dir", type=str, default="./runs")
+    parser.add_argument("--num_gist_tokens", type=int, default=1)
     args = parser.parse_args()
 
 
@@ -68,6 +80,8 @@ if __name__ == "__main__":
             list_splits=["train", "validation"], 
             batch_size=args.batch_size)
         preprocess_fn = None
+        compute_metrics_fn = None
+        optimizing_metric = "loss"
     elif args.task == "alpaca_plus": 
         TaskClass = TASK_MAP[args.task] 
         task = TaskClass(splits=["train", "validation_seen", "validation_unseen", "validation_human"], 
@@ -77,28 +91,25 @@ if __name__ == "__main__":
             list_splits=["train", "validation_unseen"], 
             batch_size=args.batch_size)
 
-        # tokenizer expand vocab for gist token
+        compression_mode = args.num_gist_tokens > 0
 
-        tokenizer.add_special_tokens({"additional_special_tokens":["<GIST>"]})
-        model.resize_token_embeddings(len(tokenizer))
-        gist_token_id = tokenizer.convert_tokens_to_ids("<GIST>")
-        # initialize word embeddings by averaging the embeddings
-        with torch.no_grad():
-            model.model.embed_tokens.weight[gist_token_id] = model.model.embed_tokens.weight[:gist_token_id].mean(dim=0)
-            model.lm_head.weight[gist_token_id] = model.lm_head.weight[:gist_token_id].mean(dim=0)
+        if compression_mode:
+            model, tokenizer = get_compression_model(model, tokenizer)
 
 
+        tokenizer.pad_token_id = tokenizer.eos_token_id
         preprocess_fn = DataCollatorForAlpacaCLM(tokenizer=tokenizer,
                                                  max_length=512,
                                                  max_length_human=512, 
                                                  label_pad_token_id=-100,
                                                  return_tensors="pt",
-                                                 gist_token=50257, 
-                                                 pad_token=0, 
-                                                 add_gist_token=True, 
-                                                #  gist_condition="gist", 
-                                                 num_gist_tokens=1, 
+                                                 gist_token=model.gist_token_id if compression_mode else None, 
+                                                 pad_token=tokenizer.pad_token_id, 
+                                                 add_gist_token=compression_mode, 
+                                                 num_gist_tokens=args.num_gist_tokens,  
                                                  check_correctness=False)
+        compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id if compression_mode else None, tokenizer, args)
+        optimizing_metric = "rougeL"
 
 
     if args.lora_adapter is not None: 
@@ -126,12 +137,13 @@ if __name__ == "__main__":
     else: 
         params = model.parameters()
     optim = AdamW(params, lr=args.lr)
-    iters = args.epochs * len(train_dataloader) / args.batch_size /args.gradient_accumulation_steps
+    iters = args.epochs * len(train_dataloader) / args.batch_size 
     lr_sched = CosineAnnealingLR(optim, T_max=iters)
 
     accel = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps, 
-        mixed_precision="bf16")
+        mixed_precision="bf16", 
+        step_scheduler_with_optimizer=False)
     train_dataloader, model, optim, lr_sched = accel.prepare(train_dataloader, model, optim, lr_sched)
 
     trainer = SimpleTrainer(
@@ -140,6 +152,9 @@ if __name__ == "__main__":
         val_dataloader=val_dataloader, 
         accelerator=accel, 
         preprocess_fn=preprocess_fn,
+        compute_metrics=compute_metrics_fn, 
+        output_dir=args.output_dir, 
+        optimizing_metric=optimizing_metric, 
         args=args, 
     )
     trainer.train()
