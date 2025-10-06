@@ -34,7 +34,7 @@ logger = datasets.logging.get_logger(__name__)
 
 
 # # from gist_tokens paper
-print("SYS PATH", sys.path)
+# print("SYS PATH", sys.path)
 
 def first_mismatch(a: List[Any], b: List[Any], window: int = 10):
     """Returns first mismatch as well as sublists for debugging."""
