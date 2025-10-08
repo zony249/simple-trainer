@@ -41,12 +41,12 @@ def print_trainable_parameters(model):
         f"trainable%: {100 * trainable_params / all_param}"
     )
 
-
-# import debugpy 
-# local_rank = int(os.environ.get("LOCAL_RANK", 0))
-# if local_rank == 0:
-#     debugpy.listen(("172.26.93.63", 5678 + local_rank))
-#     debugpy.wait_for_client()
+if int(os.environ["DEBUGPY_ENABLE"]) == 1:
+    import debugpy 
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if local_rank == 0:
+        debugpy.listen(("localhost", 5678 + local_rank))
+        debugpy.wait_for_client()
 
 
 if __name__ == "__main__": 
@@ -95,6 +95,7 @@ if __name__ == "__main__":
 
         if compression_mode:
             model, tokenizer = get_compression_model(model, tokenizer)
+        tokenizer.padding_side = "left"
 
 
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -144,7 +145,7 @@ if __name__ == "__main__":
         gradient_accumulation_steps=args.gradient_accumulation_steps, 
         mixed_precision="bf16", 
         step_scheduler_with_optimizer=False)
-    train_dataloader, model, optim, lr_sched = accel.prepare(train_dataloader, model, optim, lr_sched)
+    train_dataloader, model, optim, lr_sched, val_dataloader = accel.prepare(train_dataloader, model, optim, lr_sched, val_dataloader)
 
     trainer = SimpleTrainer(
         model, tokenizer, optim, lr_sched, 

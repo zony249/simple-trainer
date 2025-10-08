@@ -87,6 +87,7 @@ def compute_metrics(
     results = {}
 
     # Compute ROUGE-L by decoding
+    preds = np.where(preds != -100, preds, tokenizer.pad_token_id)
     decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
     # Replace -100 in the labels as we can't decode them.
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)

@@ -165,6 +165,16 @@ class SimpleTrainer:
             tbar.set_postfix({"loss": f"{loss.item():.4f}", "lr": f"{self.lr_scheduler.get_last_lr()[0]:.4e}"})
             if i%self.eval_steps == 0 and i > 0: 
                 eval_preds = self.evaluate(generate=True)
+
+                # DEBUG 
+                # os.makedirs(os.path.join(self.output_dir, "preds"), exist_ok=True)
+                # if self.accel.is_main_process: 
+                #     print(eval_preds.predictions[:2])
+                # with open(os.path.join(self.output_dir, "preds", f"{self.accel.process_index}.log"), "w") as f: 
+                #     [f.write(f"{self.tokenizer.decode(torch.where(p == -100, self.tokenizer.pad_token_id, p), skip_special_tokens=True)}\n") for p in eval_preds.predictions]
+
+
+
                 metrics = {}
                 if self.compute_metrics is not None: 
                     metrics = self.compute_metrics(eval_preds)
@@ -188,10 +198,11 @@ class SimpleTrainer:
                         f.write(",".join([f"{k}:{v}" for k, v in metrics.items()]))
                         f.write("\n")
 
-                    if operator(metrics[self.optimizing_metric], self.best_metric): 
-                        self.best_metric = metrics[self.optimizing_metric] 
-                        self.save_checkpoint(save_dir = os.path.join(self.output_dir, "best_tfmr"))
+                if operator(metrics[self.optimizing_metric], self.best_metric): 
+                    self.best_metric = metrics[self.optimizing_metric] 
+                    self.save_checkpoint(save_dir = os.path.join(self.output_dir, "best_tfmr"))
 
+                    if self.accel.is_main_process: 
                         with open(os.path.join(self.output_dir, "best_metrics.log"), "a") as f: 
                             f.write(f"step:{i},")
                             f.write(",".join([f"{k}:{v}" for k, v in metrics.items()]))
@@ -250,7 +261,7 @@ class SimpleTrainer:
                     gen_outputs = self.model.generate(input_ids=input_ids, 
                                                     attention_mask=attention_mask, 
                                                     use_cache=True, return_dict_in_generate=True, 
-                                                    max_new_tokens=512)
+                                                    max_new_tokens=25) #512)
                     preds = gen_outputs.sequences
                     if self.accel.is_main_process:
                         print("INPUTS:", self.tokenizer.batch_decode(batch["input_ids"])[0])

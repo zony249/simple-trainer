@@ -459,6 +459,8 @@ class CLlamaModel(CLlamaPreTrainedModel):
 
             batch_size, seq_len = attention_mask.shape
             num_new_toks = input_ids.shape[1]
+
+            # TODO: Further testing of Causal Mask with right-padded tokenization
             # Implementation of 4D causal attention mask 
             # CURRENTLY DOES NOT WORK WITH BEAM SEARCH
             # [batch, heads, new_inputs, total_seq_len] 
