@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from accelerate import infer_auto_device_map, dispatch_model
-    model_name = "llama-7b"
+    model_name = "huggyllama/llama-7b"
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     text = ["Hello, my dog is cute <GIST><GIST> his name is joe.", "Hey everyone! what's up? <GIST>"]
     device = next(iter(compression_model.parameters())).device.type
     inputs = compression_tokenizer(text, return_tensors="pt", padding=True).to(device)
-    outputs = compression_model.generate(**inputs, use_cache=True, max_new_tokens=100)
+    outputs = compression_model.generate(**inputs, use_cache=False, max_new_tokens=100)
     print(compression_tokenizer.batch_decode(outputs))
 
     # print(compression_model)

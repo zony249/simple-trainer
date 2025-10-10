@@ -407,7 +407,8 @@ class CLlamaModel(CLlamaPreTrainedModel):
                     if (input_ids[b] == self.gist_token_id).sum() > 0:
                         if last_idx[b] + 1 < seq_len:
                             causal_mask[b, :, last_idx[b]+1:, :first_idx[b]] = False
-                
+                            position_ids[b, last_idx[b]:] -= last_idx[b] - (attention_mask[b]==0).sum()
+                position_ids = torch.where(input_ids == self.gist_token_id, 0, position_ids)
                 causal_mask
             else: 
                 num_new_toks = input_ids.shape[1]
