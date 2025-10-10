@@ -214,7 +214,7 @@ class SimpleTrainer:
         self.model.eval()
 
         iter_val_loader = iter(self.val_dloader) 
-        num_val_steps = math.ceil(len(self.val_dloader) / self.batch_size)
+        num_val_steps = len(self.val_dloader)
 
         vbar = tqdm.tqdm(range(num_val_steps), desc="Validating")
 
@@ -261,7 +261,7 @@ class SimpleTrainer:
                     gen_outputs = self.model.generate(input_ids=input_ids, 
                                                     attention_mask=attention_mask, 
                                                     use_cache=True, return_dict_in_generate=True, 
-                                                    max_new_tokens=25) #512)
+                                                    max_new_tokens=512)
                     preds = gen_outputs.sequences
                     if self.accel.is_main_process:
                         print("INPUTS:", self.tokenizer.batch_decode(batch["input_ids"])[0])
