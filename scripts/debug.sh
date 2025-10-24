@@ -6,12 +6,12 @@
 #SBATCH --mem=400G
 #SBATCH --time=3-00:00
 #SBATCH --job-name=compression-llama7b
-#SBATCH --output=logs/%j--compression-llama7b--gist--higher-lr.out
+#SBATCH --output=logs/%j--compression-llama7b--gist--rerun.out
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 export HF_HUB_OFFLINE=1
 export HF_HOME=$SCRATCH
-export TAG="gist--higher-lr"
+export TAG="debug"
 export DEBUGPY_ENABLE=0
 nvidia-smi 
 nvidia-smi topo -m
@@ -25,8 +25,8 @@ accelerate launch \
     -m simple-trainer \
         --hf_name_or_path=llama-7b \
         --task=alpaca_plus \
-        --lr=2e-5 \
-        --epochs=4 \
+        --lr=1e-5 \
+        --epochs=1 \
         --batch_size=4 \
         --gradient_accumulation_steps=32 \
         --eval_steps=2000 \

@@ -6,12 +6,12 @@
 #SBATCH --mem=400G
 #SBATCH --time=3-00:00
 #SBATCH --job-name=llama7b
-#SBATCH --output=logs/llama7b--no-gist--new-validation-%j.out
+#SBATCH --output=logs/%j--llama7b--no-gist--lower-lr.out
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 export HF_HUB_OFFLINE=1
 export HF_HOME=$SCRATCH
-export TAG="no-gist"
+export TAG="no-gist--lower-lr"
 export DEBUGPY_ENABLE=0
 nvidia-smi 
 nvidia-smi topo -m
@@ -25,10 +25,10 @@ accelerate launch \
     -m simple-trainer \
         --hf_name_or_path=llama-7b \
         --task=alpaca_plus \
-        --lr=1e-5 \
+        --lr=5e-6 \
         --epochs=4 \
         --batch_size=4 \
-        --gradient_accumulation_steps=8 \
+        --gradient_accumulation_steps=32 \
         --eval_steps=2000 \
         --output_dir=runs/$(date +%Y-%m-%d--%H-%M-%S)--$TAG \
-        --num_gist_tokens=0 \
+        --turn_off_gist_masking \
