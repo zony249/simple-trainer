@@ -357,6 +357,7 @@ class CLlamaModel(CLlamaPreTrainedModel):
 
         self.gist_token_id = None
         self.compress_mode = False
+        self.gist_masking = False
 
     @check_model_inputs
     @auto_docstring
@@ -386,8 +387,18 @@ class CLlamaModel(CLlamaPreTrainedModel):
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
 
+
         if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
+            # PREV CODE
+            # position_ids = cache_position.unsqueeze(0)
+            # NEW CODE
+            position_ids = torch.arange(attention_mask.shape[1], device=attention_mask.device)[None, :] \
+                * torch.ones((attention_mask.shape[0], 1), device=attention_mask.device)
+            num_zeros = attention_mask.shape[-1] - (attention_mask).sum(dim=-1, keepdim=True)
+            position_ids -= num_zeros
+            position_ids = torch.where(position_ids < 0, 1, position_ids).int()
+
+
 
         if self.compress_mode:
 
@@ -399,50 +410,59 @@ class CLlamaModel(CLlamaPreTrainedModel):
                 pass 
                 causal_mask = get_causal_mask(attention_mask, self.config.num_attention_heads, seq_len)
 
-                first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
-                last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
+                # Turn on gist masking
+                if self.gist_masking:
+                    first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
+                    last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
 
-                for b in range(batch_size): 
-                    # If there exists gist tokens in the input, then fix mask
-                    if (input_ids[b] == self.gist_token_id).sum() > 0:
-                        if last_idx[b] + 1 < seq_len:
-                            causal_mask[b, :, last_idx[b]+1:, :first_idx[b]] = False
-                            position_ids[b, last_idx[b]:] -= last_idx[b] - (attention_mask[b]==0).sum()
-                position_ids = torch.where(input_ids == self.gist_token_id, 0, position_ids)
+                    # print("LAST_IDX_SHAPE", last_idx.shape)
+                    # print("ATTENTION_MASK_SHAPE", attention_mask.shape)
+                    # print("POSITION_IDS_SHAPE", position_ids.shape)
+
+                    for b in range(batch_size): 
+                        # If there exists gist tokens in the input, then fix mask
+                        if (input_ids[b] == self.gist_token_id).sum() > 0:
+                            if last_idx[b] + 1 < seq_len:
+                                causal_mask[b, :, last_idx[b]+1:, :first_idx[b]] = False
+                                
+                                position_ids[b, last_idx[b]:] -= last_idx[b] - (attention_mask[b]==0).sum()
+                    position_ids = torch.where(input_ids == self.gist_token_id, 0, position_ids)
                 causal_mask
             else: 
                 num_new_toks = input_ids.shape[1]
                 batch_size, seq_len = attention_mask.shape
                 causal_mask = get_causal_mask_with_cache(past_key_values, attention_mask, self.config.num_attention_heads, num_new_toks, seq_len)
 
-                cache_len = past_key_values.get_seq_length() 
-                if cache_len == 0: # First input
-                    # These attributes are set for each generation batch. 
-                    self.first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
-                    self.last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
-                    self.num_gist_tok_per_batch = (input_ids == self.gist_token_id).sum(dim=-1) #[batch,]
-                    self.relative_offset = attention_mask.shape[1] - attention_mask.sum(dim=-1)
-                else: 
-                    num_new_gist_toks = (input_ids == self.gist_token_id).sum(dim=-1) 
-                    # first and last gist positions in new input
-                    maybe_last_gist = get_last_idx_of_token(input_ids, self.gist_token_id)                    
-                    maybe_first_gist = get_first_idx_of_token(input_ids, self.gist_token_id)                    
-                    # update where the first and last gist tokens are in the full sequence
-                    self.last_idx = torch.where(num_new_gist_toks > 0, cache_len + maybe_last_gist, self.last_idx)
-                    self.first_idx = torch.where(self.num_gist_tok_per_batch == 0, cache_len + maybe_first_gist, self.first_idx) 
+                # turn on gist masking
+                if self.gist_masking:
+                    cache_len = past_key_values.get_seq_length() 
+                    if cache_len == 0: # First input
+                        # These attributes are set for each generation batch. 
+                        self.first_idx = get_first_idx_of_token(input_ids, self.gist_token_id)
+                        self.last_idx = get_last_idx_of_token(input_ids, self.gist_token_id)
+                        self.num_gist_tok_per_batch = (input_ids == self.gist_token_id).sum(dim=-1) #[batch,]
+                        self.relative_offset = attention_mask.shape[1] - attention_mask.sum(dim=-1)
+                    else: 
+                        num_new_gist_toks = (input_ids == self.gist_token_id).sum(dim=-1) 
+                        # first and last gist positions in new input
+                        maybe_last_gist = get_last_idx_of_token(input_ids, self.gist_token_id)                    
+                        maybe_first_gist = get_first_idx_of_token(input_ids, self.gist_token_id)                    
+                        # update where the first and last gist tokens are in the full sequence
+                        self.last_idx = torch.where(num_new_gist_toks > 0, cache_len + maybe_last_gist, self.last_idx)
+                        self.first_idx = torch.where(self.num_gist_tok_per_batch == 0, cache_len + maybe_first_gist, self.first_idx) 
 
-                    self.num_gist_tok_per_batch += num_new_gist_toks 
+                        self.num_gist_tok_per_batch += num_new_gist_toks 
 
 
-                for b in range(batch_size): 
-                    # If there exists gist tokens in the input, then fix mask
-                    if self.num_gist_tok_per_batch[b] > 0:
-                        if self.last_idx[b] + 1 < seq_len:
-                            causal_mask[b, :, self.last_idx[b]+1-cache_len:, :self.first_idx[b]] = False
-                            # mess with position IDS
-                            position_ids[b, self.last_idx[b]+1-cache_len:] = position_ids[b, self.last_idx[b]+1-cache_len:] - self.last_idx[b] + self.relative_offset[b]
-                position_ids = torch.where(input_ids == self.gist_token_id, 0, position_ids)
-                
+                    for b in range(batch_size): 
+                        # If there exists gist tokens in the input, then fix mask
+                        if self.num_gist_tok_per_batch[b] > 0:
+                            if self.last_idx[b] + 1 < seq_len:
+                                causal_mask[b, :, self.last_idx[b]+1-cache_len:, :self.first_idx[b]] = False
+                                # mess with position IDS
+                                position_ids[b, self.last_idx[b]+1-cache_len:] = position_ids[b, self.last_idx[b]+1-cache_len:] - self.last_idx[b] + self.relative_offset[b]
+                    position_ids = torch.where(input_ids == self.gist_token_id, 0, position_ids)
+                    
                 
 
             
@@ -507,6 +527,9 @@ class CLlamaModel(CLlamaPreTrainedModel):
     def set_gist_token_id(self, gist_token_id: int): 
         self.gist_token_id = gist_token_id
 
+    def set_gist_masking(self, gist_masking: bool): 
+        self.gist_masking = gist_masking
+
 
 @auto_docstring
 class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
@@ -523,8 +546,9 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
-        self.compress_mode = False
-        self.gist_token_id = None 
+        self.compress_mode = False # allows support for gist token, i.e., <GIST> is part of vocab
+        self.gist_token_id = None  # gist token id
+        self.gist_masking = False  # turns on or off attention masking for gist. if compress_mode is false, this does nothing.
 
     @can_return_tuple
     @auto_docstring
@@ -585,7 +609,8 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-    def enable_compression_mode(self, tokenizer: PreTrainedTokenizer) -> PreTrainedTokenizer: 
+    def enable_compression_mode(self, tokenizer: PreTrainedTokenizer, 
+                                gist_masking: Optional[bool]=True) -> PreTrainedTokenizer: 
         """
         1. expand the vocab size of model and tokenizer 
         2. initialize embeddings 
@@ -595,7 +620,11 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
         self.resize_token_embeddings(len(tokenizer))
 
         self.gist_token_id = tokenizer.convert_tokens_to_ids("<GIST>")
-        self.model.set_gist_token_id(self.gist_token_id)     
+        self.model.set_gist_token_id(self.gist_token_id)    
+
+        self.gist_masking = gist_masking
+        self.model.set_gist_masking(gist_masking) 
+
         # initialize word embeddings by averaging the embeddings
         with torch.no_grad():
             self.model.embed_tokens.weight[self.gist_token_id] = self.model.embed_tokens.weight[:self.gist_token_id].mean(dim=0)
@@ -603,6 +632,7 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
 
         self.compress_mode=True
         self.model.set_compress_mode(True)
+
 
 
         return tokenizer
