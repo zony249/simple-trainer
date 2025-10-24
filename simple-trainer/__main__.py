@@ -45,7 +45,7 @@ if int(os.environ["DEBUGPY_ENABLE"]) == 1:
     import debugpy 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
-        debugpy.listen(("localhost", 5678 + local_rank))
+        debugpy.listen(("172.26.93.82", 5678 + local_rank))
         debugpy.wait_for_client()
 
 
@@ -62,6 +62,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_steps", type=int, default=500)
     parser.add_argument("--output_dir", type=str, default="./runs")
     parser.add_argument("--num_gist_tokens", type=int, default=1)
+    parser.add_argument("--turn_off_gist_masking", action="store_true")
     args = parser.parse_args()
 
 
@@ -79,9 +80,14 @@ if __name__ == "__main__":
         train_dataloader, val_dataloader = task.get_dataloaders(
             list_splits=["train", "validation"], 
             batch_size=args.batch_size)
+        
+        test_dataloaders: Optional[List[DataLoader]] = None
+        test_names = None
+
         preprocess_fn = None
         compute_metrics_fn = None
         optimizing_metric = "loss"
+
     elif args.task == "alpaca_plus": 
         TaskClass = TASK_MAP[args.task] 
         task = TaskClass(splits=["train", "validation_seen", "validation_unseen", "validation_human"], 
@@ -91,26 +97,38 @@ if __name__ == "__main__":
             list_splits=["train", "validation_unseen"], 
             batch_size=args.batch_size)
 
-        compression_mode = args.num_gist_tokens > 0
+        test_dataloaders: Optional[List[DataLoader]] = task.get_dataloaders(
+            list_splits=["validation_seen", "validation_unseen", "validation_human"]
+        )
+        test_names = ["validation_seen", "validation_unseen", "validation_human"]
 
-        if compression_mode:
-            model, tokenizer = get_compression_model(model, tokenizer)
+
+        model, tokenizer = get_compression_model(model, tokenizer, args.turn_off_gist_masking)
         tokenizer.padding_side = "left"
 
 
         tokenizer.pad_token_id = tokenizer.eos_token_id
         preprocess_fn = DataCollatorForAlpacaCLM(tokenizer=tokenizer,
                                                  max_length=512,
-                                                 max_length_human=512, 
+                                                 max_length_human=768, 
                                                  label_pad_token_id=-100,
                                                  return_tensors="pt",
-                                                 gist_token=model.gist_token_id if compression_mode else None, 
+                                                 gist_token=model.gist_token_id, 
                                                  pad_token=tokenizer.pad_token_id, 
-                                                 add_gist_token=compression_mode, 
+                                                 add_gist_token=True, 
                                                  num_gist_tokens=args.num_gist_tokens,  
                                                  check_correctness=False)
-        compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id if compression_mode else None, tokenizer, args)
+        compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
+    
+    else: 
+        train_dataloader, val_dataloader = None, None 
+        test_dataloaders: Optional[List[DataLoader]] = None 
+        test_names = None
+
+        preprocess_fn = None 
+        compute_metrics_fn = None 
+        optimizing_metric = None
 
 
     if args.lora_adapter is not None: 
@@ -146,6 +164,9 @@ if __name__ == "__main__":
         mixed_precision="bf16", 
         step_scheduler_with_optimizer=False)
     train_dataloader, model, optim, lr_sched, val_dataloader = accel.prepare(train_dataloader, model, optim, lr_sched, val_dataloader)
+    if test_dataloaders is not None: 
+        test_dataloaders = [accel.prepare(t) for t in test_dataloaders]
+
 
     trainer = SimpleTrainer(
         model, tokenizer, optim, lr_sched, 
@@ -158,4 +179,17 @@ if __name__ == "__main__":
         optimizing_metric=optimizing_metric, 
         args=args, 
     )
+
     trainer.train()
+
+    trainer.load_best_checkpoint()
+
+    if test_dataloaders is not None:
+        for name, dl in zip(test_names, test_dataloaders): 
+            # preds = trainer.evaluate(dataloader=dl, generate=True)
+            # mets = compute_metrics_fn(preds)
+            # mets["eval_loss"] = preds.losses.mean().item()
+            mets = None
+            if accel.is_main_process:
+                print(f"===== EVAL RESULTS: {name} =====")
+                print(mets)
