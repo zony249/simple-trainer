@@ -23,7 +23,7 @@ from transformers import (
     EvalPrediction
 )
 
-from accelerate import Accelerator
+from accelerate import Accelerator, load_checkpoint_and_dispatch
 
 
 # Globals 
@@ -210,11 +210,13 @@ class SimpleTrainer:
                 
 
 
-    def evaluate(self, generate=False) -> EvalPrediction:
+    def evaluate(self, 
+                 dataloader: Optional[DataLoader] = None, 
+                 generate: Optional[bool] = False) -> EvalPrediction:
         self.model.eval()
 
-        iter_val_loader = iter(self.val_dloader) 
-        num_val_steps = len(self.val_dloader)
+        iter_val_loader = iter(self.val_dloader if dataloader is None else dataloader) 
+        num_val_steps = len(self.val_dloader if dataloader is None else dataloader)
 
         vbar = tqdm.tqdm(range(num_val_steps), desc="Validating")
 
@@ -263,6 +265,13 @@ class SimpleTrainer:
                                                     use_cache=True, return_dict_in_generate=True, 
                                                     max_new_tokens=512)
                     preds = gen_outputs.sequences
+
+                    # The prompt is included in the generated tokens. Remove this.
+                    assert (
+                        preds[:, : input_ids.shape[-1]] == input_ids
+                    ).all()
+                    preds = preds[:, input_ids.shape[-1] :]
+
                     if self.accel.is_main_process:
                         print("INPUTS:", self.tokenizer.batch_decode(batch["input_ids"])[0])
                         print("LABELS:", self.tokenizer.batch_decode(torch.where(labels == -100, self.tokenizer.pad_token_id, labels))[0])
@@ -305,6 +314,21 @@ class SimpleTrainer:
         unwrapped_model.save_pretrained(save_dir)
         self.tokenizer.save_pretrained(save_dir) 
 
+    def load_best_checkpoint(self) -> PreTrainedModel: 
+        """
+        load_from_model_object: In case the PreTrainedModel class has some
+            post-initialization modifications, directly load state_dict into 
+            load_from_model_object. Otherwise, self.model.__class__.from_pretrained is used.
+        """
+        model = self.accel.unwrap_model(self.model) 
+        model = model.from_pretrained(os.path.join(self.output_dir, "best_tfmr"))
+        model, dummy_optim = self.accel.prepare(model, torch.optim.AdamW(model.parameters(), lr=1e-5))
+
+        self.model = model 
+        return model
+
+
+
 
 
  
@@ -328,7 +352,20 @@ def torch_pad_and_concatenate(tensor1, tensor2, padding_index=-100):
     return result
     
         
+def unwrap_model(model: nn.Module) -> nn.Module:
+    """
+    Recursively unwraps a model from potential containers (as used in distributed training).
 
+    Args:
+        model (`torch.nn.Module`): The model to unwrap.
+    """
+    # since there could be multiple levels of wrapping, unwrap recursively
+    if hasattr(model, "module"):
+        return unwrap_model(model.module)
+    else:
+        return model
+    
+    
 
 if __name__ == "__main__": 
 
