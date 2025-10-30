@@ -186,10 +186,10 @@ if __name__ == "__main__":
 
     if test_dataloaders is not None:
         for name, dl in zip(test_names, test_dataloaders): 
-            # preds = trainer.evaluate(dataloader=dl, generate=True)
-            # mets = compute_metrics_fn(preds)
-            # mets["eval_loss"] = preds.losses.mean().item()
-            mets = None
+            preds = trainer.evaluate(dataloader=dl, generate=True)
+            mets = compute_metrics_fn(preds)
+            mets["eval_loss"] = preds.losses.mean().item()
+            # mets = None
             if accel.is_main_process:
                 print(f"===== EVAL RESULTS: {name} =====")
                 print(mets)

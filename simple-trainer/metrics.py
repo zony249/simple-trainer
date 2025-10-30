@@ -22,7 +22,7 @@ PredAndLogprobsOutput = Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 # Must load after torch for some reason
 import evaluate  # noqa
 
-
+# NOTE: THIS FILE SHOULD GO UNDER tasks/alpaca_plus
 
 def strip_special_tokens(s):
     """A way of getting rid of special tokens WITHOUT getting rid of the gist token."""
