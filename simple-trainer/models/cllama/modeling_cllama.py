@@ -399,7 +399,8 @@ class CLlamaModel(CLlamaPreTrainedModel):
             position_ids = torch.where(position_ids < 0, 1, position_ids).int()
 
 
-
+        # Compress mode will assume the model has expanded vocab.
+        # whether gist mask is turned on or not is determined by the self.gist_masking
         if self.compress_mode:
 
             batch_size, seq_len = attention_mask.shape
@@ -500,7 +501,6 @@ class CLlamaModel(CLlamaPreTrainedModel):
 
         hidden_states = inputs_embeds
 
-        # TODO: rotary embeddings must be updated too
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
