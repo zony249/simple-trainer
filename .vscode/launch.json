@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Python: Attach", 
             "type": "debugpy",
@@ -89,6 +90,24 @@
                 "CUDA_VISIBLE_DEVICES": "0"
             },
             "console": "integratedTerminal",
-        }
+        },
+        {
+            "name": "simple-trainer/llm-paraphrasing",
+            "type": "debugpy",
+            "request": "launch",
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "1,2"
+            },
+            "module": "accelerate.commands.launch",
+            "args": [
+                "--num_processes=2",
+                "-m",
+                "simple-trainer.llm-paraphrase",
+                "--hf_name_or_path=Qwen/Qwen3-0.6B",
+                "--task=alpaca_plus",
+                "--save_dir=runs"
+            ],
+            "console": "integratedTerminal",
+        },
     ]
 }
