@@ -44,6 +44,9 @@ class AlpacaPlus(AbstractTask):
                          **kwargs) 
     def get_dataset(self, 
                     **kwargs) -> Dataset: 
+        """
+        does nothing, since dataset retrieval is handled by self.builder.
+        """
         dataset = []
         if self.load_from_disk: 
             pass

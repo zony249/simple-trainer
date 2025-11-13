@@ -70,10 +70,10 @@ class AlpacaPlusOrig(datasets.GeneratorBasedBuilder):
     BUILDER_CONFIGS = [
         AlpacaConfig(
             name="default",
-            train_file="simple-trainer/data/alpaca_plus_train.json",
-            validation_seen_file="simple-trainer/data/alpaca_plus_validation_seen.json",
-            validation_unseen_file="simple-trainer/data/alpaca_plus_validation_unseen.json",  # noqa
-            validation_human_file="simple-trainer/data/alpaca_plus_validation_human.json",  # noqa
+            train_file="simple-trainer/data/alpaca_plus/alpaca_plus_train.json",
+            validation_seen_file="simple-trainer/data/alpaca_plus/alpaca_plus_validation_seen.json",
+            validation_unseen_file="simple-trainer/data/alpaca_plus/alpaca_plus_validation_unseen.json",  # noqa
+            validation_human_file="simple-trainer/data/alpaca_plus/alpaca_plus_validation_human.json",  # noqa
             description="Default config for Alpaca",
         ),
     ]
@@ -426,3 +426,4 @@ class DataCollatorForAlpacaCLM:
 
         return BatchEncoding(model_inputs)
     
+
