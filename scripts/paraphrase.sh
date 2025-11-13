@@ -12,7 +12,7 @@
 nvidia-smi 
 nvidia-smi topo -m 
 
-export CUDA_VISIBLE_DEVICES=1,2,3,4
+export CUDA_VISIBLE_DEVICES=4,5
 # export HF_HUB_OFFLINE=1
 
 python3 -m simple-trainer.llm-paraphrase \
