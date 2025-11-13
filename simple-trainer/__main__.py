@@ -130,6 +130,7 @@ if __name__ == "__main__":
         compute_metrics_fn = None 
         optimizing_metric = None
 
+        raise NotImplementedError 
 
     if args.lora_adapter is not None: 
         if args.lora_adapter == "random_init": 
