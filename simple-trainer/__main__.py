@@ -21,7 +21,8 @@ from accelerate import Accelerator
 
 from .tasks import (
     TASK_MAP, 
-    DataCollatorForAlpacaCLM
+    DataCollatorForAlpacaCLM, 
+    DataCollatorForAlpacaPlusPlusCLM
 )
 from .trainer import SimpleTrainer
 from .compress_utils import get_compression_model, get_mi_compression_model
@@ -120,7 +121,38 @@ if __name__ == "__main__":
                                                  check_correctness=False)
         compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
-    
+    elif args.task == "alpaca_pp": 
+        TaskClass = TASK_MAP[args.task] 
+        task = TaskClass(splits=["train", "validation_seen", "validation_unseen", "validation_human"], 
+                         load_from_disk=False, #TODO
+                         local_dir=None) #TODO
+        train_dataloader, val_dataloader = task.get_dataloaders(
+            list_splits=["train", "validation_unseen"], 
+            batch_size=args.batch_size)
+
+        test_dataloaders: Optional[List[DataLoader]] = task.get_dataloaders(
+            list_splits=["validation_seen", "validation_unseen", "validation_human"]
+        )
+        test_names = ["validation_seen", "validation_unseen", "validation_human"]
+
+        #TODO: get_mi_compression_model
+        model, tokenizer = get_compression_model(model, tokenizer, args.turn_off_gist_masking)
+        tokenizer.padding_side = "left"
+
+
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        preprocess_fn = DataCollatorForAlpacaPlusPlusCLM(tokenizer=tokenizer,
+                                                 max_length=512,
+                                                 max_length_human=768, 
+                                                 label_pad_token_id=-100,
+                                                 return_tensors="pt",
+                                                 gist_token=model.gist_token_id, 
+                                                 pad_token=tokenizer.pad_token_id, 
+                                                 add_gist_token=True, 
+                                                 num_gist_tokens=args.num_gist_tokens,  
+                                                 check_correctness=False)
+        compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
+        optimizing_metric = "rougeL"
     else: 
         train_dataloader, val_dataloader = None, None 
         test_dataloaders: Optional[List[DataLoader]] = None 
