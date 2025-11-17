@@ -51,6 +51,16 @@ from ..utils import *
 
 logger = logging.get_logger(__name__)
 
+class BaseModelOutputsWithGistStates(BaseModelOutputWithPast):
+    last_hidden_state: Optional[torch.FloatTensor] = None
+    past_key_values: Optional[Cache] = None
+    hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[tuple[torch.FloatTensor, ...]] = None
+    gist_hidden: Optional[tuple[tuple[torch.FloatTensor, ...]]] = None # [layers, batch, num_gist, hidden]
+
+
+
+
 
 @use_kernel_forward_from_hub("RMSNorm")
 class CLlamaRMSNorm(nn.Module):
@@ -482,19 +492,12 @@ class CLlamaModel(CLlamaPreTrainedModel):
             batch_size, seq_len = attention_mask.shape
             num_new_toks = input_ids.shape[1]
 
-            # TODO: Further testing of Causal Mask with right-padded tokenization
             # Implementation of 4D causal attention mask 
             # CURRENTLY DOES NOT WORK WITH BEAM SEARCH
             # [batch, heads, new_inputs, total_seq_len] 
             if not use_cache: 
-                # pre_tril = attention_mask[:, None, None, :] \
-                #     * torch.ones((1, self.config.num_attention_heads, 1, seq_len)).to(attention_mask.device) 
-                # causal_mask = torch.tril(pre_tril).bool()
                 causal_mask = get_causal_mask(attention_mask, self.config.num_attention_heads, seq_len)
             else: 
-                # cache_seq_len = past_key_values.get_seq_length() 
-                # pre_tril = attention_mask[:, None, None, :] * torch.ones((1, self.config.num_attention_heads, num_new_toks, seq_len)).to(attention_mask.device)
-                # causal_mask = torch.tril(pre_tril, diagonal=cache_seq_len).bool()
                 causal_mask = get_causal_mask_with_cache(past_key_values, attention_mask, self.config.num_attention_heads, num_new_toks, seq_len)
 
             # causal_mask = None # remove later
@@ -502,6 +505,8 @@ class CLlamaModel(CLlamaPreTrainedModel):
         hidden_states = inputs_embeds
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        output_hidden_states = [] # [layer, batch, seq_len, hidden]
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -513,11 +518,35 @@ class CLlamaModel(CLlamaPreTrainedModel):
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
+            output_hidden_states.append(hidden_states) 
 
         hidden_states = self.norm(hidden_states)
-        return BaseModelOutputWithPast(
+
+
+        if self.compress_mode:
+            gist_states = [[] for _ in self.layers] #[layer, [batch, [num_gist, hidden]]] 
+
+            first_gist = get_first_idx_of_token(input_ids, self.gist_token_id) # [batch]
+            last_gist = get_last_idx_of_token(input_ids, self.gist_token_id) #[batch]
+            
+            # loop through batch
+            for i in range(len(first_gist)): 
+                has_gist = (input_ids[i] == self.gist_token_id).sum()
+                if has_gist: 
+                    gist_states_slice = [layer_state[i, first_gist[i]:last_gist+1[i]] for layer_state in output_hidden_states] #[layer, [num_gist, hidden]] for batch i
+                else: 
+                    # if there are no gist tokens, then for that batch, all layers get None
+                    gist_states_slice = [None for _ in gist_states]
+                for j in range(len(gist_states)): 
+                    gist_states[j].append(gist_states_slice[j])
+
+
+        # TODO: Do this
+        return BaseModelOutputsWithGistStates(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values,
+            hidden_states=output_hidden_states, 
+            gist_hidden=gist_states
         )
 
     def set_compress_mode(self, mode: bool) -> bool: 
