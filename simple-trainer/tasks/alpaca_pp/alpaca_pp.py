@@ -16,14 +16,14 @@ import datasets
 from datasets import load_dataset, load_from_disk
 from datasets.splits import NamedSplit
 
-from .utils import AlpacaPlusOrig, DataCollatorForAlpacaCLM
+from .utils import AlpacaPlusPlusOrig, DataCollatorForAlpacaPlusPlusCLM
 
 logger = datasets.logging.get_logger(__name__)
 
 
 
 class AlpacaPlusPlus(AbstractTask): 
-    task = "alpaca_plus"
+    task = "alpaca_pp"
     dataset_path = ""
     dataset_name = ""
 
@@ -34,7 +34,7 @@ class AlpacaPlusPlus(AbstractTask):
                  **kwargs): 
 
 
-        self.builder = AlpacaPlusOrig()
+        self.builder = AlpacaPlusPlusOrig()
         self.builder.download_and_prepare()
 
         # gets_splits and process_dataset called in parent init

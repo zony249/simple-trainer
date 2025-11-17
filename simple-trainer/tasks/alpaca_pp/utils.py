@@ -62,22 +62,24 @@ class AlpacaConfig(datasets.BuilderConfig):
         self.validation_human_file: str = validation_human_file
 
 
-class AlpacaPlusOrig(datasets.GeneratorBasedBuilder):
-    """AlpacaPlus Dataset."""
+class AlpacaPlusPlusOrig(datasets.GeneratorBasedBuilder):
+    """AlpacaPlusPlus Dataset. Slightly different from the original in that it 
+    contains paraphrased instructions.
+    """
 
     VERSION = datasets.Version("1.0.1")
     BUILDER_CONFIG_CLASS = AlpacaConfig
     BUILDER_CONFIGS = [
         AlpacaConfig(
-            name="default",
-            train_file="simple-trainer/data/alpaca_plus/alpaca_plus_train.json",
-            validation_seen_file="simple-trainer/data/alpaca_plus/alpaca_plus_validation_seen.json",
-            validation_unseen_file="simple-trainer/data/alpaca_plus/alpaca_plus_validation_unseen.json",  # noqa
-            validation_human_file="simple-trainer/data/alpaca_plus/alpaca_plus_validation_human.json",  # noqa
+            name="alpaca_pp",
+            train_file="simple-trainer/data/alpaca_pp/alpaca_pp.json",
+            validation_seen_file="simple-trainer/data/alpaca_pp/alpaca_plus_validation_seen.json",
+            validation_unseen_file="simple-trainer/data/alpaca_pp/alpaca_plus_validation_unseen.json",  # noqa
+            validation_human_file="simple-trainer/data/alpaca_pp/alpaca_plus_validation_human.json",  # noqa
             description="Default config for Alpaca",
         ),
     ]
-    DEFAULT_CONFIG_NAME = "default"
+    DEFAULT_CONFIG_NAME = "alpaca_pp"
 
     def _info(self):
         return datasets.DatasetInfo(
@@ -89,6 +91,7 @@ class AlpacaPlusOrig(datasets.GeneratorBasedBuilder):
                     "output": datasets.Value("string"),
                     "source": datasets.Value("string"),
                     "split": datasets.Value("string"),
+                    "paraphrase": datasets.Value("string")
                 }
             ),
             supervised_keys=None,
@@ -276,7 +279,7 @@ class AlpacaPlusOrig(datasets.GeneratorBasedBuilder):
 
 
 @dataclass
-class DataCollatorForAlpacaCLM:
+class DataCollatorForAlpacaPlusPlusCLM:
     """Data collator for decoder-only models. Does left padding."""
 
     tokenizer: PreTrainedTokenizerBase
@@ -374,6 +377,11 @@ class DataCollatorForAlpacaCLM:
                         "completion! Skipping loading this batch element."
                     )
                     continue
+            
+            paraphrase = instance["paraphrase"] if "paraphrase" in instance else None
+            tokenized_paraphrase = self.tokenizer(paraphrase)["input_ids"] if paraphrase is not None else None
+
+
 
             model_inputs["input_ids"].append(tokenized_source)
             model_inputs["labels"].append(labels)
@@ -387,6 +395,11 @@ class DataCollatorForAlpacaCLM:
                 [1 for _ in tokenized_completion]
             )
 
+            model_inputs["paraphrase_input_ids"].append(tokenized_paraphrase)
+            model_inputs["paraphrase_attention_mask"].append(
+                [1 for _ in tokenized_paraphrase] if tokenized_paraphrase is not None else None
+            )
+
         # Left-pad inputs, convert to tensor.
         for key, value in model_inputs.items():
             if key == "labels":
@@ -395,15 +408,18 @@ class DataCollatorForAlpacaCLM:
                 pad_token_id = 0
             else:
                 pad_token_id = self.tokenizer.pad_token_id
-            # To left-pad inputs, reverse, then right-pad, then reverse.
-            value_tensors = [torch.tensor(v[::-1]) for v in value]
-            model_inputs[key] = torch.fliplr(
-                pad_sequence(
-                    value_tensors,
-                    batch_first=True,
-                    padding_value=pad_token_id,
+
+            # if list does not contain any nones, then run the following.
+            if not any(x is None for x in value):
+                # To left-pad inputs, reverse, then right-pad, then reverse.
+                value_tensors = [torch.tensor(v[::-1]) for v in value] 
+                model_inputs[key] = torch.fliplr(
+                    pad_sequence(
+                        value_tensors,
+                        batch_first=True,
+                        padding_value=pad_token_id,
+                    )
                 )
-            )
 
         # Construct gist mask.
         # if self.gist_condition == "gist":
