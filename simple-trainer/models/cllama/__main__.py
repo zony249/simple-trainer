@@ -22,7 +22,7 @@ if __name__ == "__main__":
     tokenizer.padding_side = "left"
 
     # turn on gist mode
-    tokenizer = model.enable_compression_model(tokenizer=tokenizer
+    tokenizer = model.enable_compression_model(tokenizer=tokenizer,
                                 gist_masking=True)
 
     test_sents = ["first sentence.<GIST>\n\none gist token.", 
