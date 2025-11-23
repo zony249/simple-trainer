@@ -28,9 +28,14 @@ else:
     _file = globals()["__file__"]
     sys.modules[__name__] = _LazyModule(__name__, _file, define_import_structure(_file), module_spec=__spec__)
 
+# from .configuration_cllama import *
+# from .modeling_cllama import *
+# from .tokenization_llama import *
+# from .tokenization_llama_fast import *
 
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
+# from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 
-AutoConfig.register("cllama", CLlamaConfig)
-AutoModel.register(CLlamaConfig, CLlamaModel)
-AutoModelForCausalLM.register(CLlamaConfig, CLlamaForCausalLM)
+# AutoConfig.register("cllama", CLlamaConfig)
+# AutoModel.register(CLlamaConfig, CLlamaModel)
+# AutoModelForCausalLM.register(CLlamaConfig, CLlamaForCausalLM)
+from .modeling_cllama import *

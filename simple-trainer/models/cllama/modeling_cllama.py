@@ -21,6 +21,7 @@ from typing import Callable, Optional, Union
 
 import torch
 from torch import nn
+from dataclasses import dataclass
 
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
@@ -51,6 +52,7 @@ from ..utils import *
 
 logger = logging.get_logger(__name__)
 
+@dataclass
 class BaseModelOutputsWithGistStates(BaseModelOutputWithPast):
     last_hidden_state: Optional[torch.FloatTensor] = None
     past_key_values: Optional[Cache] = None
@@ -59,6 +61,15 @@ class BaseModelOutputsWithGistStates(BaseModelOutputWithPast):
     gist_hidden: Optional[tuple[tuple[torch.FloatTensor, ...]]] = None # [layers, batch, num_gist, hidden]
 
 
+@dataclass 
+class CausalLMOutputWithGistStates(CausalLMOutputWithPast): 
+    loss: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
+    past_key_values: Optional[Cache] = None
+    hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[tuple[torch.FloatTensor, ...]] = None
+    gist_hidden: Optional[tuple[tuple[torch.FloatTensor, ...]]] = None
+    critic_outputs: Optional[tuple[torch.FloatTensor, torch.FloatTensor]] = None # (positive_states, negative_states)
 
 
 
@@ -506,7 +517,7 @@ class CLlamaModel(CLlamaPreTrainedModel):
 
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        output_hidden_states = [] # [layer, batch, seq_len, hidden]
+        output_hidden_states = [hidden_states] # [layer + 1, batch, seq_len, hidden]
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
@@ -522,7 +533,7 @@ class CLlamaModel(CLlamaPreTrainedModel):
 
         hidden_states = self.norm(hidden_states)
 
-
+        # extract gist states
         if self.compress_mode:
             gist_states = [[] for _ in self.layers] #[layer, [batch, [num_gist, hidden]]] 
 
@@ -533,7 +544,7 @@ class CLlamaModel(CLlamaPreTrainedModel):
             for i in range(len(first_gist)): 
                 has_gist = (input_ids[i] == self.gist_token_id).sum()
                 if has_gist: 
-                    gist_states_slice = [layer_state[i, first_gist[i]:last_gist+1[i]] for layer_state in output_hidden_states] #[layer, [num_gist, hidden]] for batch i
+                    gist_states_slice = [layer_state[i, first_gist[i]:last_gist[i]+1] for layer_state in output_hidden_states] #[layer, [num_gist, hidden]] for batch i
                 else: 
                     # if there are no gist tokens, then for that batch, all layers get None
                     gist_states_slice = [None for _ in gist_states]
@@ -631,12 +642,13 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
         if labels is not None:
             loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
 
-        return CausalLMOutputWithPast(
+        return CausalLMOutputWithGistStates(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            gist_hidden=outputs.gist_hidden
         )
     def enable_compression_mode(self, tokenizer: PreTrainedTokenizer, 
                                 gist_masking: Optional[bool]=True) -> PreTrainedTokenizer: 
@@ -667,6 +679,171 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
         return tokenizer
 
 
+
+
+@auto_docstring
+class MICLlamaForCausalLM(CLlamaForCausalLM): 
+    _tied_weights_keys = ["lm_head.weight"]#, "critic.0.weight", "critic.0.bias", "critic.1.weight", "critic.1.bias"]
+    _tp_plan = {"lm_head": "colwise_rep"}#, 
+                # "critic": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+
+    mi_model = True, 
+
+
+    def __init__(self, config): 
+        super().__init__(config) 
+        #configure linear classifiers
+        self.config.num_hidden_layers
+        self.critic = None
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
+        # new args: 
+        paraphrase_input_ids=None,  
+        paraphrase_attention_mask=None, 
+        **kwargs: Unpack[TransformersKwargs]) -> Any: 
+
+        causal_lm_outputs: CausalLMOutputWithGistStates = super().forward(
+            input_ids=input_ids, 
+            attention_mask=attention_mask, 
+            position_ids=position_ids, 
+            past_key_values=past_key_values, 
+            inputs_embeds=inputs_embeds, 
+            labels=labels, 
+            use_cache=use_cache, 
+            cache_position=cache_position, 
+            logits_to_keep=logits_to_keep, 
+            **kwargs)
+        
+        # default stream
+        if paraphrase_input_ids is None: 
+            return causal_lm_outputs 
+
+        assert not use_cache, f"if paraphrase is provided, use_cache must be turned off"
+        assert self.compress_mode, f"for MI compression, the model must be set to compress mode (i.e., it must support expanded vocab)"
+        assert self.critic is not None, f"you must add a critic network"
+        # otherwise, do replacement 
+        del causal_lm_outputs.hidden_states
+        neg_critic_outputs = self.get_neg_critic_outputs(paraphrase_input_ids=paraphrase_input_ids, 
+                                               paraphrase_attention_mask=paraphrase_attention_mask, 
+                                               input_gist_states=causal_lm_outputs.gist_hidden)
+
+        pos_critic_outputs = self.get_pos_critic_outputs(input_gist_states=causal_lm_outputs.gist_hidden)
+
+
+
+        return CausalLMOutputWithGistStates(
+            loss=causal_lm_outputs.loss, 
+            logits=causal_lm_outputs.logits, 
+            past_key_values=causal_lm_outputs.past_key_values, 
+            hidden_states=None, 
+            gist_hidden=causal_lm_outputs.gist_hidden, 
+            critic_outputs=(pos_critic_outputs, neg_critic_outputs), 
+        )
+
+
+    def get_pos_critic_outputs(
+        self, 
+        input_gist_states
+    ) -> Any: 
+        """
+        
+        Note: input_gist_states has shape: [layer+1, batch, num_gist, hidden]. 
+        we assume that in a batch, all seqs have the same number of gist tokens for training.
+        """
+        critic_outputs = []
+        # start from element 1, since element 0 is input embedding
+        for i in range(1, len(input_gist_states)): 
+            stacked_gist = torch.stack(input_gist_states[i], dim=0) #[batch, num_gist, hidden] 
+            critic_output = self.critic(stacked_gist) #[batch, num_gist, 1]
+
+            critic_outputs.append(critic_output)
+        
+        return torch.stack(critic_outputs, dim=0)
+
+    def get_neg_critic_outputs(
+        self, 
+        paraphrase_input_ids, 
+        paraphrase_attention_mask, 
+        input_gist_states, 
+    ) -> Any: 
+        """
+        first, get paraphrase hidden states by forward prop
+
+        
+        then, for each layer (independently): 
+            1. input paraphrase input embeds
+            2. input gist states from positive input
+            3. obtain gist output for paraphrase + input_gist_states 
+
+        """
+        paraphrase_outputs = self(input_ids=paraphrase_input_ids, 
+                       attention_mask=paraphrase_attention_mask)
+
+        paraphrase_hidden = paraphrase_outputs.hidden_states 
+        pass
+
+        # assumption: all sequences have the same number of gist tokens 
+        # assumption: all layers have the same batch_size (the obvious default)
+        # here we prepare inputs that would be identical across layers.
+        num_gist = input_gist_states[0][0].shape[0] 
+        batch_size = len(input_gist_states[0])
+        causal_mask = get_causal_mask(
+            attention_mask=torch.cat(
+                (paraphrase_attention_mask, torch.ones((batch_size, num_gist), device=paraphrase_attention_mask.device)), 
+                dim=-1), 
+            num_attn_heads=self.config.num_attention_heads, 
+            total_seq_len=paraphrase_attention_mask.shape[-1] + num_gist)
+        # update position_ids with positions of gist tokens
+        position_ids = torch.arange(
+            paraphrase_attention_mask.shape[1], device=paraphrase_attention_mask.device)[None, :] \
+            * torch.ones((paraphrase_attention_mask.shape[0], 1), device=paraphrase_attention_mask.device)
+        num_zeros = paraphrase_attention_mask.shape[-1] - (paraphrase_attention_mask).sum(dim=-1, keepdim=True)
+        position_ids -= num_zeros
+        position_ids = torch.where(position_ids < 0, 1, position_ids).int()
+        # print("POSITION IDS SHAPE", position_ids.shape)
+        # print("BATCH, NUM_GIST", batch_size, num_gist)
+        position_ids = torch.cat((position_ids, torch.zeros((batch_size, num_gist), device=paraphrase_attention_mask.device)), dim=1).int()
+        position_embeddings = self.model.rotary_emb(paraphrase_hidden[0], position_ids)
+        
+        critic_outputs = [] # [layer, batch, num_gist, 1]
+
+        for i, layer in enumerate(self.model.layers): 
+            stacked_gist_states = torch.stack(input_gist_states[i], dim=0) # [batch, num_gist, hidden]
+            concat_states = torch.cat((paraphrase_hidden[0], stacked_gist_states), dim=1) #[batch, seq_len + num_gist, hidden]
+            
+            
+            hidden_states = layer(hidden_states=concat_states, 
+                attention_mask=causal_mask, 
+                position_ids=position_ids, 
+                position_embeddings=position_embeddings, 
+                use_cache=False, 
+            )
+
+            gist_output = hidden_states[:, paraphrase_attention_mask.shape[-1]:]
+            assert gist_output.shape[1] == num_gist 
+            critic_output = self.critic(gist_output)
+            
+            critic_outputs.append(critic_output)
+        
+        return torch.stack(critic_outputs, dim=0)
+
+    def add_critic_network(self, critic: nn.Module):
+        self.critic = critic
+
+
+
+
 class CLlamaForSequenceClassification(GenericForSequenceClassification, CLlamaPreTrainedModel): ...
 
 
@@ -687,5 +864,6 @@ __all__ = [
     "CLlamaPreTrainedModel",
     "CLlamaForSequenceClassification",
     "CLlamaForQuestionAnswering",
-    "CLlamaForTokenClassification",
+    "CLlamaForTokenClassification", 
+    "MICLlamaForCausalLM"
 ]

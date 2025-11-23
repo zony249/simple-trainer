@@ -2,5 +2,6 @@
 from .cllama import (
     CLlamaConfig,
     CLlamaModel,  
-    CLlamaForCausalLM
+    CLlamaForCausalLM, 
+    MICLlamaForCausalLM
 )
