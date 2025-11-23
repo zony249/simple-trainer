@@ -20,7 +20,8 @@ from transformers import (
     AutoTokenizer, 
     PreTrainedModel, 
     PreTrainedTokenizer, 
-    EvalPrediction
+    EvalPrediction, 
+    BatchEncoding
 )
 
 from accelerate import Accelerator, load_checkpoint_and_dispatch
@@ -120,6 +121,10 @@ class SimpleTrainer:
 
         self.save_checkpoint(save_dir=os.path.join(self.output_dir, "best_tfmr"))
 
+        self.__post_init__()
+
+    def __post_init__(self): 
+        print("========= SIMPLE TRAINER ==========")
 
     def train(self): 
 
@@ -143,26 +148,28 @@ class SimpleTrainer:
             with self.accel.accumulate(self.model):
                 with self.accel.autocast():
 
-                    outputs = self.model(input_ids=batch["input_ids"],
-                                            labels=batch["labels"], 
-                                            attention_mask=batch["attention_mask"], 
-                                            use_cache=False)
-                    logits = outputs.logits
-                    loss = outputs.loss
+                    loss, loss_mets = self.compute_loss(batch, return_loss_breakdown=True)
                     # loss = nn.CrossEntropyLoss()(logits.view(-1, logits.shape[-1]), batch["labels"].view(-1))
 
                 self.accel.backward(loss)
+                loss = loss.detach() 
+
                 # loss.backward()
                 self.optim.step() 
                 self.lr_scheduler.step()
                 self.optim.zero_grad()
+                # torch.cuda.empty_cache()
 
 
             # update tbar desc
             cur_epoch = i / num_steps_to_train * self.epochs 
             tbar.set_description(f"Training {cur_epoch:.2f}/{self.epochs} Epochs")
             # update tbar postfix
-            tbar.set_postfix({"loss": f"{loss.item():.4f}", "lr": f"{self.lr_scheduler.get_last_lr()[0]:.4e}"})
+            if len(loss_mets) > 0:
+                loss_mets_stringify = {k: f"{v:.4f}" for k, v in loss_mets.items()} 
+                tbar.set_postfix(loss_mets_stringify | {"lr": f"{self.lr_scheduler.get_last_lr()[0]:.4e}"})
+            else: 
+                tbar.set_postfix({"loss": f"{loss.item():.4f}", "lr": f"{self.lr_scheduler.get_last_lr()[0]:.4e}"})
             if i%self.eval_steps == 0 and i > 0: 
                 eval_preds = self.evaluate(generate=True)
 
@@ -208,6 +215,20 @@ class SimpleTrainer:
                             f.write(",".join([f"{k}:{v}" for k, v in metrics.items()]))
                             f.write("\n")
                 
+    def compute_loss(self, batch: BatchEncoding, 
+                     return_loss_breakdown=True) -> torch.FloatTensor: 
+        outputs = self.model(input_ids=batch["input_ids"],
+                                labels=batch["labels"], 
+                                attention_mask=batch["attention_mask"], 
+                                use_cache=False)
+        
+        logits = outputs.logits
+        loss = outputs.loss
+
+        if return_loss_breakdown: 
+            mets = {"loss": loss.item()}
+            return loss, mets
+        return loss
 
 
     def evaluate(self, 
@@ -310,7 +331,10 @@ class SimpleTrainer:
         if save_dir is None: 
             save_dir = self.output_dir 
         # save model 
-        unwrapped_model = self.accel.unwrap_model(self.model) 
+        if self.accel.mixed_precision == "fp8": 
+            self.accel.save_model(self.model, save_dir)
+            return 
+        unwrapped_model = self.accel.unwrap_model(self.model)
         unwrapped_model.save_pretrained(save_dir)
         self.tokenizer.save_pretrained(save_dir) 
 
@@ -365,6 +389,47 @@ def unwrap_model(model: nn.Module) -> nn.Module:
     else:
         return model
     
+
+
+
+
+
+class MICompressTrainer(SimpleTrainer): 
+    def __init__(self, 
+                 *args, **kwargs): 
+        super().__init__(*args, **kwargs) 
+        self.alpha = self.args.alpha 
+
+     
+    def __post_init__(self): 
+        print("========= MI COMPRESS TRAINING =========")
+    
+    def compute_loss(self, batch, return_loss_breakdown=True):
+        
+        outputs = self.model(
+            input_ids=batch["input_ids"],
+            labels=batch["labels"], 
+            attention_mask=batch["attention_mask"],
+            paraphrase_input_ids=batch["paraphrase_input_ids"], 
+            paraphrase_attention_mask=batch["paraphrase_attention_mask"], 
+            use_cache=False)
+
+        # print("input_ids shape:", batch["input_ids"].shape) 
+        # print("paraphrase_input_ids shape:", batch["paraphrase_input_ids"].shape) 
+        ce_loss = outputs.loss
+        pos, neg = outputs.critic_outputs
+
+        del outputs
+
+        dv_loss = -(pos.mean() - torch.log(neg.exp().mean() + 1e-9))
+
+        if return_loss_breakdown: 
+            mets = {"loss": (ce_loss + self.alpha * dv_loss).item(), 
+                    "ce_loss": ce_loss.item(), 
+                    "mi_lb": -dv_loss.item()} 
+            return ce_loss + self.alpha * dv_loss, mets
+        return ce_loss + self.alpha * dv_loss
+
     
 
 if __name__ == "__main__": 

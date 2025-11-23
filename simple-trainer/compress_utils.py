@@ -11,7 +11,8 @@ from transformers import (
 from .models import (
     CLlamaConfig,
     CLlamaModel,  
-    CLlamaForCausalLM
+    CLlamaForCausalLM, 
+    MICLlamaForCausalLM
 )
 
 COMPRESSED_MODEL_MAP = {
@@ -48,8 +49,26 @@ def get_compression_model(model: PreTrainedModel,
     return cmodel, ctokenizer
 
 def get_mi_compression_model(model: PreTrainedModel, 
-                             tokenizer: PreTrainedTokenizer) -> Tuple[PreTrainedModel, PreTrainedTokenizer]: 
-    pass
+                          tokenizer: PreTrainedTokenizer, 
+                          turn_off_gist_masking: Optional[bool] = False) -> Tuple[PreTrainedModel, PreTrainedTokenizer]: 
+    config = model.config 
+    model_type = config.model_type 
+    if model_type not in COMPRESSED_MODEL_MAP: 
+        raise ValueError(f"Model type {model_type} is not supported for compression.") 
+    compression_model_type = COMPRESSED_MODEL_MAP[model_type] 
+
+    if compression_model_type == "cllama": 
+        cmodel_config = CLlamaConfig.from_pretrained(model.config._name_or_path)
+        cmodel_config.torch_dtype = torch.bfloat16
+        cmodel = MICLlamaForCausalLM(cmodel_config)
+        cmodel.load_state_dict(model.state_dict(), strict=False)
+        
+        ctokenizer = cmodel.enable_compression_mode(tokenizer=tokenizer, gist_masking = not turn_off_gist_masking) 
+        
+        # del model
+        # torch.cuda.empty_cache()
+        
+    return cmodel, ctokenizer
 
 if __name__ == "__main__": 
 

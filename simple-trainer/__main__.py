@@ -8,6 +8,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.distributed.fsdp import MixedPrecision
+import torchao
+from torch import nn
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import (
@@ -18,13 +21,16 @@ from peft import (
     TaskType
 )
 from accelerate import Accelerator 
+from accelerate.utils import (
+    AORecipeKwargs
+)
 
 from .tasks import (
     TASK_MAP, 
     DataCollatorForAlpacaCLM, 
     DataCollatorForAlpacaPlusPlusCLM
 )
-from .trainer import SimpleTrainer
+from .trainer import SimpleTrainer, MICompressTrainer
 from .compress_utils import get_compression_model, get_mi_compression_model
 from .metrics import get_compute_metrics_fn
 
@@ -64,6 +70,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="./runs")
     parser.add_argument("--num_gist_tokens", type=int, default=1)
     parser.add_argument("--turn_off_gist_masking", action="store_true")
+    parser.add_argument("--alpha", type=float, default=1.0, help="balancing hyperparameter for DV Loss")
     args = parser.parse_args()
 
 
@@ -88,6 +95,7 @@ if __name__ == "__main__":
         preprocess_fn = None
         compute_metrics_fn = None
         optimizing_metric = "loss"
+        TrainerClass = SimpleTrainer
 
     elif args.task == "alpaca_plus": 
         TaskClass = TASK_MAP[args.task] 
@@ -121,6 +129,8 @@ if __name__ == "__main__":
                                                  check_correctness=False)
         compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
+        TrainerClass = SimpleTrainer
+
     elif args.task == "alpaca_pp": 
         TaskClass = TASK_MAP[args.task] 
         task = TaskClass(splits=["train", "validation_seen", "validation_unseen", "validation_human"], 
@@ -136,7 +146,7 @@ if __name__ == "__main__":
         test_names = ["validation_seen", "validation_unseen", "validation_human"]
 
         #TODO: get_mi_compression_model
-        model, tokenizer = get_compression_model(model, tokenizer, args.turn_off_gist_masking)
+        model, tokenizer = get_mi_compression_model(model, tokenizer, args.turn_off_gist_masking)
         tokenizer.padding_side = "left"
 
 
@@ -153,6 +163,7 @@ if __name__ == "__main__":
                                                  check_correctness=False)
         compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
+        TrainerClass = MICompressTrainer
     else: 
         train_dataloader, val_dataloader = None, None 
         test_dataloaders: Optional[List[DataLoader]] = None 
@@ -161,6 +172,7 @@ if __name__ == "__main__":
         preprocess_fn = None 
         compute_metrics_fn = None 
         optimizing_metric = None
+        TrainerClass = SimpleTrainer
 
         raise NotImplementedError 
 
@@ -194,14 +206,31 @@ if __name__ == "__main__":
 
     accel = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps, 
-        mixed_precision="bf16", 
-        step_scheduler_with_optimizer=False)
+        step_scheduler_with_optimizer=False, 
+        # mixed_precision="fp8", 
+        # kwargs_handlers=[AORecipeKwargs(config=torchao.float8.Float8LinearConfig(
+        #     enable_fsdp_float8_all_gather=True, 
+        #     pad_inner_dim=True, 
+        #     round_scales_to_power_of_2= True, 
+        # ))], 
+        )
+
     train_dataloader, model, optim, lr_sched, val_dataloader = accel.prepare(train_dataloader, model, optim, lr_sched, val_dataloader)
     if test_dataloaders is not None: 
         test_dataloaders = [accel.prepare(t) for t in test_dataloaders]
 
+    if hasattr(model, "mi_model"): 
+        critic = nn.Sequential( 
+            nn.Linear(model.config.hidden_size, model.config.hidden_size//4), 
+            nn.SiLU(), 
+            nn.Linear(model.config.hidden_size//4, 1)
+        ).to("cuda")
+        model.add_critic_network(critic)
+        optim.add_param_group({"params": critic.parameters(), "lr": args.lr})
+    else: 
+        raise ValueError
 
-    trainer = SimpleTrainer(
+    trainer = TrainerClass(
         model, tokenizer, optim, lr_sched, 
         train_dataloader=train_dataloader, 
         val_dataloader=val_dataloader, 
