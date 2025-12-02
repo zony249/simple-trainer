@@ -9,7 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.distributed.fsdp import MixedPrecision
-import torchao
+# import torchao
 from torch import nn
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -27,6 +27,7 @@ from accelerate.utils import (
 
 from .tasks import (
     TASK_MAP, 
+    COMPRESSION_TASKS, 
     DataCollatorForAlpacaCLM, 
     DataCollatorForAlpacaPlusPlusCLM
 )
@@ -52,7 +53,7 @@ if int(os.environ["DEBUGPY_ENABLE"]) == 1:
     import debugpy 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
-        debugpy.listen(("172.26.93.82", 5678 + local_rank))
+        debugpy.listen(("172.26.93.3", 5678 + local_rank))
         debugpy.wait_for_client()
 
 
@@ -70,7 +71,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="./runs")
     parser.add_argument("--num_gist_tokens", type=int, default=1)
     parser.add_argument("--turn_off_gist_masking", action="store_true")
-    parser.add_argument("--alpha", type=float, default=1.0, help="balancing hyperparameter for DV Loss")
+    parser.add_argument("--alpha", type=float, default=0.0, help="balancing hyperparameter for DV Loss")
     args = parser.parse_args()
 
 
@@ -146,7 +147,8 @@ if __name__ == "__main__":
         test_names = ["validation_seen", "validation_unseen", "validation_human"]
 
         #TODO: get_mi_compression_model
-        model, tokenizer = get_mi_compression_model(model, tokenizer, args.turn_off_gist_masking)
+        model, tokenizer = get_mi_compression_model(model, tokenizer, args.turn_off_gist_masking) if args.alpha > 0 else \
+            get_compression_model(model, tokenizer, args.turn_off_gist_masking)
         tokenizer.padding_side = "left"
 
 
@@ -163,7 +165,7 @@ if __name__ == "__main__":
                                                  check_correctness=False)
         compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
-        TrainerClass = MICompressTrainer
+        TrainerClass = MICompressTrainer if hasattr(model, "mi_model") else SimpleTrainer
     else: 
         train_dataloader, val_dataloader = None, None 
         test_dataloaders: Optional[List[DataLoader]] = None 
@@ -182,13 +184,17 @@ if __name__ == "__main__":
             #TODO: initialize an empty lora adapter
             lora_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM, 
-                r=64, 
+                r=256, 
                 target_modules="all-linear", 
                 lora_alpha=32, 
                 init_lora_weights="gaussian"
             )
             # model = LoraModel(model, lora_config, adapter_name="default")
-            model = get_peft_model(model, lora_config)
+            # model = get_peft_model(model, lora_config)
+            model.add_adapter(lora_config, "default")
+            if args.task in COMPRESSION_TASKS: 
+                # pass
+                model.unlock_embeddings()
         else: 
             pass
             #TODO: load lora_adapter with defined name 
@@ -219,16 +225,19 @@ if __name__ == "__main__":
     if test_dataloaders is not None: 
         test_dataloaders = [accel.prepare(t) for t in test_dataloaders]
 
-    if hasattr(model, "mi_model"): 
+
+    if args.alpha > 0 and args.task in ["alpaca_pp"]: 
+        config = accel.unwrap_model(model).config
         critic = nn.Sequential( 
-            nn.Linear(model.config.hidden_size, model.config.hidden_size//4), 
-            nn.SiLU(), 
-            nn.Linear(model.config.hidden_size//4, 1)
+            nn.Linear(config.hidden_size, 1, bias=False), 
         ).to("cuda")
-        model.add_critic_network(critic)
-        optim.add_param_group({"params": critic.parameters(), "lr": args.lr})
-    else: 
-        raise ValueError
+        model.module.add_critic_network(critic)
+        print("\nCritic Network Added\n")
+        optim.add_param_group({"params": critic.parameters(), "lr": args.lr * 1e-3, "weight_decay":1e0})
+    # else: 
+    #     raise ValueError
+
+    accel.wait_for_everyone() 
 
     trainer = TrainerClass(
         model, tokenizer, optim, lr_sched, 
