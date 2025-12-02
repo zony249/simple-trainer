@@ -78,9 +78,16 @@ def compute_metrics(
     output_file: Optional[str] = None,
 ) -> Metrics:
     del gist_token
-
-    preds = eval_preds.predictions
+    
     labels = eval_preds.label_ids
+    preds = eval_preds.predictions
+
+    shorter = min(len(labels), len(preds)) 
+
+    labels = labels[:shorter]
+    preds = preds[:shorter]
+    
+
     if isinstance(preds, tuple):
         preds = preds[0]
 
