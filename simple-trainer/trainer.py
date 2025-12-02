@@ -25,6 +25,10 @@ from transformers import (
 )
 
 from accelerate import Accelerator, load_checkpoint_and_dispatch
+from accelerate.utils import (
+    merge_fsdp_weights
+)
+from peft import PeftModel
 
 
 # Globals 
@@ -120,6 +124,9 @@ class SimpleTrainer:
             shutil.rmtree(self.best_mets_file)
 
         self.save_checkpoint(save_dir=os.path.join(self.output_dir, "best_tfmr"))
+        # if isinstance(self.accel.unwrap_model(self.model), PeftModel): 
+        #     best_path = os.path.join(self.output_dir, "best_tfmr")
+
 
         self.__post_init__()
 
@@ -160,6 +167,7 @@ class SimpleTrainer:
                 self.optim.zero_grad()
                 # torch.cuda.empty_cache()
 
+            self.accel.wait_for_everyone()
 
             # update tbar desc
             cur_epoch = i / num_steps_to_train * self.epochs 
@@ -236,10 +244,18 @@ class SimpleTrainer:
                  generate: Optional[bool] = False) -> EvalPrediction:
         self.model.eval()
 
+        model = self.accel.unwrap_model(self.model)
+        # model = self.model
+
+
         iter_val_loader = iter(self.val_dloader if dataloader is None else dataloader) 
         num_val_steps = len(self.val_dloader if dataloader is None else dataloader)
 
         vbar = tqdm.tqdm(range(num_val_steps), desc="Validating")
+
+        all_preds = None 
+        all_labels = None
+        all_losses = None
 
         for step in vbar: 
             try:
@@ -253,12 +269,10 @@ class SimpleTrainer:
             labels = None
             losses = None
 
-            all_preds = None 
-            all_labels = None
-            all_losses = None
 
             with torch.no_grad():
-                outputs = self.model(input_ids=batch["input_ids"], 
+                self.accel.wait_for_everyone()
+                outputs = model(input_ids=batch["input_ids"], 
                                     labels=batch["labels"], 
                                     attention_mask=batch["attention_mask"], 
                                     use_cache=False)
@@ -273,15 +287,15 @@ class SimpleTrainer:
                 if generate: 
                     if "labels" in batch:
                         labels = batch["labels"]
-                        input_ids = batch["prompt_input_ids"] 
-                        attention_mask = batch["prompt_attention_mask"]
+                        input_ids = batch["prompt_input_ids"] if "prompt_input_ids" in batch else batch["input_ids"]
+                        attention_mask = batch["prompt_attention_mask"] if "prompt_attention_mask" in batch else batch["attention_mask"]
                     else:
                         labels = None 
                         input_ids = batch["input_ids"]
                         attention_mask = batch["attention_mask"]
                     
 
-                    gen_outputs = self.model.generate(input_ids=input_ids, 
+                    gen_outputs = model.generate(input_ids=input_ids, 
                                                     attention_mask=attention_mask, 
                                                     use_cache=True, return_dict_in_generate=True, 
                                                     max_new_tokens=512)
@@ -320,6 +334,9 @@ class SimpleTrainer:
             vbar.set_postfix({"eval_loss": loss.item()})
             vbar.set_description(f"Validating {step+1}/{num_val_steps} steps")
 
+            self.accel.wait_for_everyone()
+
+        print(f"Number of samples predicted: {all_preds.shape}")
 
         return EvalPrediction(
             predictions=all_preds, 
@@ -331,12 +348,43 @@ class SimpleTrainer:
         if save_dir is None: 
             save_dir = self.output_dir 
         # save model 
+        self.tokenizer.save_pretrained(save_dir) 
+
         if self.accel.mixed_precision == "fp8": 
             self.accel.save_model(self.model, save_dir)
             return 
-        unwrapped_model = self.accel.unwrap_model(self.model)
-        unwrapped_model.save_pretrained(save_dir)
-        self.tokenizer.save_pretrained(save_dir) 
+
+        # self.accel.wait_for_everyone()
+
+        # if isinstance(self.model, PeftModel): 
+            
+            # if self.accel.is_main_process:
+        self.accel.wait_for_everyone() 
+
+        self.accel.unwrap_model(self.model).to(torch.bfloat16).save_pretrained(
+            save_dir, 
+            is_main_process=self.accel.is_main_process,
+            save_function=self.accel.save,
+        )
+
+        if isinstance(self.accel.unwrap_model(self.model), PeftModel): 
+            self.accel.unwrap_model(self.model).peft_config["default"].save_pretrained(save_dir)
+
+            # if hasattr(self.model, "_fsdp_wrapped_module"):
+            #     model = self.model._fsdp_wrapped_module
+                
+            #     model.save_pretrained(
+            #         save_dir, 
+            #         # is_main_process=self.accel.is_main_process,
+            #         # save_function=self.accel.save,
+            #     ) 
+            # else: 
+            #     raise ValueError("FSDP Peft Model does not have attribute _fsdp_wrapped_module")
+
+            # self.accel.wait_for_everyone() 
+            # return 
+
+        # self.accel.save_model(self.model, save_dir)
 
     def load_best_checkpoint(self) -> PreTrainedModel: 
         """
@@ -344,12 +392,16 @@ class SimpleTrainer:
             post-initialization modifications, directly load state_dict into 
             load_from_model_object. Otherwise, self.model.__class__.from_pretrained is used.
         """
-        model = self.accel.unwrap_model(self.model) 
-        model = model.from_pretrained(os.path.join(self.output_dir, "best_tfmr"))
-        model, dummy_optim = self.accel.prepare(model, torch.optim.AdamW(model.parameters(), lr=1e-5))
+        self.model = self.accel.unwrap_model(self.model)
+        self.model.zero_grad(set_to_none=True)
+        if len(self.model.active_adapters()) > 0: 
+            self.model.load_adapter(os.path.join(self.output_dir, "best_tfmr"), adapter_name="best")
+            self.model.set_adapter("best")
+        else: 
+            self.model = self.model.from_pretrained(os.path.join(self.output_dir, "best_tfmr"))
+        self.model, dummy_optim = self.accel.prepare(self.model, torch.optim.AdamW(self.model.parameters(), lr=1e-5))
 
-        self.model = model 
-        return model
+        return self.model
 
 
 
@@ -427,8 +479,8 @@ class MICompressTrainer(SimpleTrainer):
             mets = {"loss": (ce_loss + self.alpha * dv_loss).item(), 
                     "ce_loss": ce_loss.item(), 
                     "mi_lb": -dv_loss.item()} 
-            return ce_loss + self.alpha * dv_loss, mets
-        return ce_loss + self.alpha * dv_loss
+            return ce_loss + self.alpha * torch.minimum(dv_loss, torch.tensor(1, device=dv_loss.device)), mets
+        return ce_loss + self.alpha * torch.minimum(dv_loss, torch.tensor(1, device=dv_loss.device))
 
     
 
