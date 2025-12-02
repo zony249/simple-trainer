@@ -677,6 +677,9 @@ class CLlamaForCausalLM(CLlamaPreTrainedModel, GenerationMixin):
 
 
         return tokenizer
+    
+    def unlock_embeddings(self): 
+        self.model.embed_tokens.weight.requires_grad = True
 
 
 
