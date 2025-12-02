@@ -52,4 +52,9 @@ if __name__ == "__main__":
     val_batch = next(iter(val_dataloader))
     val_batched = preprocess_fn(val_batch)
 
+    datasets = task.get_splits(list_splits=list_splits)
+
+    print("train Length", len(datasets["train"])) 
+    print("val_unseen Length", len(datasets["validation_unseen"]) )
+
     pass 
