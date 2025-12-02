@@ -10,3 +10,8 @@ TASK_MAP = {
     "alpaca_plus": AlpacaPlus,
     "alpaca_pp": AlpacaPlusPlus
 }
+
+COMPRESSION_TASKS = [
+    "alpaca_plus", 
+    "alpaca_pp"
+]
