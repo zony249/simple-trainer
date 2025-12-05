@@ -53,7 +53,7 @@ if int(os.environ["DEBUGPY_ENABLE"]) == 1:
     import debugpy 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
-        debugpy.listen(("172.26.93.3", 5678 + local_rank))
+        debugpy.listen(("172.26.93.106", 5678 + local_rank))
         debugpy.wait_for_client()
 
 
