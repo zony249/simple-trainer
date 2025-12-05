@@ -182,12 +182,17 @@ class SimpleTrainer:
                 eval_preds = self.evaluate(generate=True)
 
                 # DEBUG 
-                # os.makedirs(os.path.join(self.output_dir, "preds"), exist_ok=True)
-                # if self.accel.is_main_process: 
-                #     print(eval_preds.predictions[:2])
-                # with open(os.path.join(self.output_dir, "preds", f"{self.accel.process_index}.log"), "w") as f: 
-                #     [f.write(f"{self.tokenizer.decode(torch.where(p == -100, self.tokenizer.pad_token_id, p), skip_special_tokens=True)}\n") for p in eval_preds.predictions]
+                os.makedirs(os.path.join(self.output_dir, "preds"), exist_ok=True)
+                if self.accel.is_main_process: 
+                    print(eval_preds.predictions[:2])
+                with open(os.path.join(self.output_dir, "preds", f"{self.accel.process_index}.log"), "w") as f: 
+                    [f.write(repr(f"{self.tokenizer.decode(torch.where(p == -100, self.tokenizer.pad_token_id, p), skip_special_tokens=True)}") + "\n") for p in eval_preds.predictions]
 
+                os.makedirs(os.path.join(self.output_dir, "labels"), exist_ok=True)
+                if self.accel.is_main_process: 
+                    print(eval_preds.label_ids[:2])
+                with open(os.path.join(self.output_dir, "labels", f"{self.accel.process_index}.log"), "w") as f: 
+                    [f.write(repr(f"{self.tokenizer.decode(torch.where(p == -100, self.tokenizer.pad_token_id, p), skip_special_tokens=True)}") + "\n") for p in eval_preds.label_ids]
 
 
                 metrics = {}
@@ -287,8 +292,8 @@ class SimpleTrainer:
                 if generate: 
                     if "labels" in batch:
                         labels = batch["labels"]
-                        input_ids = batch["prompt_input_ids"] if "prompt_input_ids" in batch else batch["input_ids"]
-                        attention_mask = batch["prompt_attention_mask"] if "prompt_attention_mask" in batch else batch["attention_mask"]
+                        input_ids = batch["prompt_input_ids"] #if "prompt_input_ids" in batch else batch["input_ids"]
+                        attention_mask = batch["prompt_attention_mask"] #if "prompt_attention_mask" in batch else batch["attention_mask"]
                     else:
                         labels = None 
                         input_ids = batch["input_ids"]
@@ -327,7 +332,7 @@ class SimpleTrainer:
                         labels = self.accel.gather(labels)
                     
                     all_preds = (preds.cpu() if all_preds is None else torch_pad_and_concatenate(all_preds, preds.cpu(), padding_index=-100))
-                    all_labels = (labels.cpu() if all_labels is None else torch_pad_and_concatenate(all_preds, preds.cpu(), padding_index=-100))
+                    all_labels = (labels.cpu() if all_labels is None else torch_pad_and_concatenate(all_labels, labels.cpu(), padding_index=-100))
                     all_losses = (losses.cpu() if all_losses is None else torch.cat([all_losses, losses.cpu()]))
             
 
@@ -337,6 +342,7 @@ class SimpleTrainer:
             self.accel.wait_for_everyone()
 
         print(f"Number of samples predicted: {all_preds.shape}")
+        print(f"Number of references: {all_labels.shape}")
 
         return EvalPrediction(
             predictions=all_preds, 
