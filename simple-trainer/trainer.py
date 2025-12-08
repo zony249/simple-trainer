@@ -360,11 +360,6 @@ class SimpleTrainer:
             self.accel.save_model(self.model, save_dir)
             return 
 
-        # self.accel.wait_for_everyone()
-
-        # if isinstance(self.model, PeftModel): 
-            
-            # if self.accel.is_main_process:
         self.accel.wait_for_everyone() 
 
         self.accel.unwrap_model(self.model).to(torch.bfloat16).save_pretrained(
@@ -376,21 +371,6 @@ class SimpleTrainer:
         if isinstance(self.accel.unwrap_model(self.model), PeftModel): 
             self.accel.unwrap_model(self.model).peft_config["default"].save_pretrained(save_dir)
 
-            # if hasattr(self.model, "_fsdp_wrapped_module"):
-            #     model = self.model._fsdp_wrapped_module
-                
-            #     model.save_pretrained(
-            #         save_dir, 
-            #         # is_main_process=self.accel.is_main_process,
-            #         # save_function=self.accel.save,
-            #     ) 
-            # else: 
-            #     raise ValueError("FSDP Peft Model does not have attribute _fsdp_wrapped_module")
-
-            # self.accel.wait_for_everyone() 
-            # return 
-
-        # self.accel.save_model(self.model, save_dir)
 
     def load_best_checkpoint(self) -> PreTrainedModel: 
         """
