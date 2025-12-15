@@ -21,6 +21,7 @@ from peft import (
     TaskType
 )
 from accelerate import Accelerator 
+from accelerate import DistributedDataParallelKwargs
 from accelerate.utils import (
     AORecipeKwargs
 )
@@ -31,7 +32,7 @@ from .tasks import (
     DataCollatorForAlpacaCLM, 
     DataCollatorForAlpacaPlusPlusCLM
 )
-from .trainer import SimpleTrainer, MICompressTrainer
+from .trainer import SimpleTrainer, MICompressTrainerWithCoordinateDescent
 from .compress_utils import get_compression_model, get_mi_compression_model
 from .metrics import get_compute_metrics_fn
 
@@ -53,7 +54,7 @@ if int(os.environ["DEBUGPY_ENABLE"]) == 1:
     import debugpy 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
-        debugpy.listen(("172.26.93.106", 5678 + local_rank))
+        debugpy.listen(("172.26.93.228", 5678 + local_rank))
         debugpy.wait_for_client()
 
 
@@ -71,7 +72,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="./runs")
     parser.add_argument("--num_gist_tokens", type=int, default=1)
     parser.add_argument("--turn_off_gist_masking", action="store_true")
-    parser.add_argument("--alpha", type=float, default=0.0, help="balancing hyperparameter for DV Loss")
+    # parser.add_argument("--num_compress_steps", type=int, default=1800, help="number of steps to learn language modeling objective before learning the critic")
+    # parser.add_argument("--num_critic_steps", type=int, default=200, help="number of steps to learn the critic for maximizing MI")
+    parser.add_argument("--compress_fraction", default=0.25, type=float)
     args = parser.parse_args()
 
 
@@ -147,8 +150,7 @@ if __name__ == "__main__":
         test_names = ["validation_seen", "validation_unseen", "validation_human"]
 
         #TODO: get_mi_compression_model
-        model, tokenizer = get_mi_compression_model(model, tokenizer, args.turn_off_gist_masking) if args.alpha > 0 else \
-            get_compression_model(model, tokenizer, args.turn_off_gist_masking)
+        model, tokenizer = get_mi_compression_model(model, tokenizer, args.turn_off_gist_masking) 
         tokenizer.padding_side = "left"
 
 
@@ -165,7 +167,7 @@ if __name__ == "__main__":
                                                  check_correctness=False)
         compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
-        TrainerClass = MICompressTrainer if hasattr(model, "mi_model") else SimpleTrainer
+        TrainerClass = MICompressTrainerWithCoordinateDescent
     else: 
         train_dataloader, val_dataloader = None, None 
         test_dataloaders: Optional[List[DataLoader]] = None 
@@ -210,30 +212,30 @@ if __name__ == "__main__":
     iters = args.epochs * len(train_dataloader) / args.batch_size 
     lr_sched = CosineAnnealingLR(optim, T_max=iters)
 
+
+
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+
+
     accel = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps, 
         step_scheduler_with_optimizer=False, 
-        # mixed_precision="fp8", 
-        # kwargs_handlers=[AORecipeKwargs(config=torchao.float8.Float8LinearConfig(
-        #     enable_fsdp_float8_all_gather=True, 
-        #     pad_inner_dim=True, 
-        #     round_scales_to_power_of_2= True, 
-        # ))], 
-        )
+        kwargs_handlers=[ddp_kwargs]
+    )
 
     train_dataloader, model, optim, lr_sched, val_dataloader = accel.prepare(train_dataloader, model, optim, lr_sched, val_dataloader)
     if test_dataloaders is not None: 
         test_dataloaders = [accel.prepare(t) for t in test_dataloaders]
 
 
-    if args.alpha > 0 and args.task in ["alpaca_pp"]: 
-        config = accel.unwrap_model(model).config
-        critic = nn.Sequential( 
-            nn.Linear(config.hidden_size, 1, bias=False), 
-        ).to("cuda")
-        model.module.add_critic_network(critic)
-        print("\nCritic Network Added\n")
-        optim.add_param_group({"params": critic.parameters(), "lr": args.lr * 1e-3, "weight_decay":1e0})
+    # if args.alpha > 0 and args.task in ["alpaca_pp"]: 
+    #     config = accel.unwrap_model(model).config
+    #     critic = nn.Sequential( 
+    #         nn.Linear(config.hidden_size, 1, bias=False), 
+    #     ).to("cuda")
+    #     model.module.add_critic_network(critic)
+    #     print("\nCritic Network Added\n")
+    #     optim.add_param_group({"params": critic.parameters(), "lr": args.lr * 1e-3, "weight_decay":1e0})
     # else: 
     #     raise ValueError
 
