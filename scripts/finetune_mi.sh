@@ -1,10 +1,9 @@
 #!/bin/bash 
 #SBATCH --account=aip-lilimou 
-#SBATCH --nodes=1 
-#SBATCH --cpus-per-task=8 
-#SBATCH --gpus-per-node=l40s:4
-#SBATCH --mem=400G
-#SBATCH --time=0-23:00
+#SBATCH --cpus-per-task=2
+#SBATCH --gpus-per-node=l40s:1
+#SBATCH --mem=128G
+#SBATCH --time=2-00:00
 #SBATCH --job-name=mi-comp-llama7b
 #SBATCH --output=logs/%j--mi-comp-llama7b--gist.out
 
@@ -34,8 +33,8 @@ accelerate launch \
         --lr=2e-4 \
         --epochs=4 \
         --batch_size=2 \
-        --gradient_accumulation_steps=10 \
+        --gradient_accumulation_steps=40 \
         --eval_steps=2000 \
-        --output_dir=$SCRATCH/runs/$(date +%Y-%m-%d--%H-%M-%S)--$TAG \
         --lora_adapter=random_init \
-        --alpha=1e-3 \
+        --compress_fraction=0.05 \
+        --output_dir=$SCRATCH/runs/$(date +%Y-%m-%d--%H-%M-%S)--$TAG \
