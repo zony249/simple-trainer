@@ -32,7 +32,7 @@ from .tasks import (
     DataCollatorForAlpacaCLM, 
     DataCollatorForAlpacaPlusPlusCLM
 )
-from .trainer import SimpleTrainer, MICompressTrainerWithCoordinateDescent
+from .trainer import SimpleTrainer, MICompressTrainer, MICompressTrainerWithCoordinateDescent
 from .compress_utils import get_compression_model, get_mi_compression_model
 from .metrics import get_compute_metrics_fn
 
@@ -54,7 +54,7 @@ if int(os.environ["DEBUGPY_ENABLE"]) == 1:
     import debugpy 
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     if local_rank == 0:
-        debugpy.listen(("172.26.93.228", 5678 + local_rank))
+        debugpy.listen(("172.26.93.56", 5678 + local_rank))
         debugpy.wait_for_client()
 
 
@@ -74,7 +74,9 @@ if __name__ == "__main__":
     parser.add_argument("--turn_off_gist_masking", action="store_true")
     # parser.add_argument("--num_compress_steps", type=int, default=1800, help="number of steps to learn language modeling objective before learning the critic")
     # parser.add_argument("--num_critic_steps", type=int, default=200, help="number of steps to learn the critic for maximizing MI")
+    parser.add_argument("--do_coordinate_descent", action="store_true")
     parser.add_argument("--compress_fraction", default=0.25, type=float)
+    parser.add_argument("--alpha", type=float, default=1e-2, help="DV loss mixing ratio")
     args = parser.parse_args()
 
 
@@ -167,7 +169,7 @@ if __name__ == "__main__":
                                                  check_correctness=False)
         compute_metrics_fn = get_compute_metrics_fn(model.gist_token_id, tokenizer, args)
         optimizing_metric = "rougeL"
-        TrainerClass = MICompressTrainerWithCoordinateDescent
+        TrainerClass = MICompressTrainerWithCoordinateDescent if args.do_coordinate_descent else MICompressTrainer
     else: 
         train_dataloader, val_dataloader = None, None 
         test_dataloaders: Optional[List[DataLoader]] = None 
