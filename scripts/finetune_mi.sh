@@ -5,12 +5,12 @@
 #SBATCH --mem=128G
 #SBATCH --time=2-00:00
 #SBATCH --job-name=mi-comp-llama7b
-#SBATCH --output=logs/%j--mi-comp-llama7b--gist.out
+#SBATCH --output=logs/%j--mi-comp-llama7b--gist-0-dv.out
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 export HF_HUB_OFFLINE=1
 export HF_HOME=$SCRATCH
-export TAG="mi-gist"
+export TAG="mi-gist-train-together-0-dv"
 export DEBUGPY_ENABLE=0
 
 export NCCL_P2P_DISABLE=1
@@ -34,7 +34,7 @@ accelerate launch \
         --epochs=4 \
         --batch_size=2 \
         --gradient_accumulation_steps=40 \
-        --eval_steps=2000 \
+        --eval_steps=16000 \
         --lora_adapter=random_init \
-        --compress_fraction=0.05 \
+        --alpha=0 \
         --output_dir=$SCRATCH/runs/$(date +%Y-%m-%d--%H-%M-%S)--$TAG \
